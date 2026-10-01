@@ -121,3 +121,17 @@ youtrack_mcp/
 - Поля по умолчанию при создании issue (тип, подпроект) из настроек проекта
 - Attachment download/upload
 - Переход на GraphQL для экономии трафика (доступен с 2021.x)
+
+## Скачать YAML-спеку REST API с вашего инстанса
+
+```bash
+./fetch_api_spec.sh https://youtrack.yourcompany.com [permanent-token]
+# токен можно не подставлять в команду — возьмётся из $YOUTRACK_TOKEN или спросит интерактивно
+```
+
+Скрипт пробует `/rest/docs/swagger.yaml`, `/api/rest/docs/swagger.yaml`,
+`/app/rest/docs/swagger.yaml` и сохраняет удавшийся вариант в
+`youtrack-api-spec.yaml`. Если ни один путь не подошёл — откройте
+`<url>/rest/docs/` в браузере, в DevTools → Network найдите запрос к
+`swagger.yaml`/`swagger.json` (или клик «Download JSON/YAML» на странице Swagger UI)
+и пришлите этот файл.
