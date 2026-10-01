@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "youtrack": {
+      "type": "local",
+      "command": ["python3", "-m", "youtrack_mcp.server"],
+      "cwd": "/path/to/this/repo",
+      "environment": {
+        "YOUTRACK_URL": "https://youtrack.yourcompany.com",
+        "YOUTRACK_TOKEN": "{env:YOUTRACK_TOKEN}"
+      },
+      "enabled": true
+    }
+  }
+}
