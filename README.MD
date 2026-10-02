@@ -2,6 +2,7 @@
 
 MCP-сервер для **JetBrains YouTrack 2022.3** через REST API (`/api`).
 Фокус первой версии — **issues и доски (Agile boards)**.
+Написан на **Node.js** и запускается через **npx**.
 
 ## Какой API у YouTrack 2022.3
 
@@ -32,15 +33,20 @@ MCP-сервер для **JetBrains YouTrack 2022.3** через REST API (`/api
 
 ## Установка
 
+Не требует установки — запуск через `npx` скачает пакет сам:
+
 ```bash
-pip install -e .
-# или просто: pip install fastmcp httpx
+npx -y youtrack-mcp        # из npm-реестра
+# либо из локального клонированного репозитория:
+npm install && node bin/cli.js
 ```
+
+Требуется Node.js >= 18 (используется встроенный `fetch`).
 
 ## Запуск вручную (проверка)
 
 ```bash
-YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx python3 -m youtrack_mcp.server
+YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
 ```
 
 Транспорт — stdio (то, что ожидает opencode).
@@ -48,7 +54,7 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx python3 -m youtrack
 ## Подключение к opencode
 
 Скопируйте `opencode.json.example` в `opencode.json` проекта (или `~/.config/opencode/opencode.json`),
-поправьте `cwd` и URL:
+поправьте URL:
 
 ```json
 {
@@ -56,8 +62,7 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx python3 -m youtrack
   "mcp": {
     "youtrack": {
       "type": "local",
-      "command": ["python3", "-m", "youtrack_mcp.server"],
-      "cwd": "/path/to/this/repo",
+      "command": ["npx", "-y", "youtrack-mcp"],
       "environment": {
         "YOUTRACK_URL": "https://youtrack.yourcompany.com",
         "YOUTRACK_TOKEN": "{env:YOUTRACK_TOKEN}"
@@ -102,17 +107,19 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx python3 -m youtrack
 ## Тесты
 
 ```bash
-python3 tests_server.py   # smoke-тест: MCP-handshake + вызовы инструментов на моке API
+npm test   # smoke-тест: MCP-handshake + вызовы инструментов на моке API
 ```
 
 ## Структура
 
 ```
-youtrack_mcp/
-  client.py         # async HTTP-клиент (httpx, Bearer-токен)
-  tools_issues.py   # инструменты по issues
-  tools_boards.py   # инструменты по доскам/проектам
-  server.py         # сборка FastMCP-сервера (stdio)
+bin/cli.js            # точка входа для npx youtrack-mcp
+src/
+  client.js           # HTTP-клиент (глобальный fetch, Bearer-токен)
+  tools-issues.js     # инструменты по issues
+  tools-boards.js     # инструменты по доскам/проектам
+  server.js           # сборка MCP-сервера (@modelcontextprotocol/sdk, stdio)
+tests/server.test.js  # smoke-тест
 ```
 
 ## Идеи для следующих шагов
