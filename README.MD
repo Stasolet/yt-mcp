@@ -36,7 +36,10 @@ MCP-сервер для **JetBrains YouTrack 2022.3** через REST API (`/api
 Не требует установки — запуск через `npx` скачает пакет сам:
 
 ```bash
-npx -y youtrack-mcp        # из npm-реестра
+# из GitHub (репозиторий: https://github.com/Stasolet/yt-mcp):
+npx -y github:Stasolet/yt-mcp
+# из npm-реестра (когда пакет будет опубликован):
+npx -y youtrack-mcp
 # либо из локального клонированного репозитория:
 npm install && node bin/cli.js
 ```
@@ -62,7 +65,7 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
   "mcp": {
     "youtrack": {
       "type": "local",
-      "command": ["npx", "-y", "youtrack-mcp"],
+      "command": ["npx", "-y", "github:Stasolet/yt-mcp"],
       "environment": {
         "YOUTRACK_URL": "https://youtrack.yourcompany.com",
         "YOUTRACK_TOKEN": "{env:YOUTRACK_TOKEN}"

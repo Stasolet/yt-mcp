@@ -3,7 +3,7 @@
   "mcp": {
     "youtrack": {
       "type": "local",
-      "command": ["npx", "-y", "youtrack-mcp"],
+      "command": ["npx", "-y", "github:Stasolet/yt-mcp"],
       "environment": {
         "YOUTRACK_URL": "https://youtrack.yourcompany.com",
         "YOUTRACK_TOKEN": "{env:YOUTRACK_TOKEN}"
