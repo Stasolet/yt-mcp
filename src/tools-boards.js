@@ -6,6 +6,7 @@
  */
 import { z } from "zod";
 import { normalizeIssue } from "./tools-issues.js";
+import { getProjectFields } from "./tools-meta.js";
 
 const SHORT_ISSUE_FIELDS =
   "id,project(shortName),numberInProject,summary," +
@@ -196,43 +197,18 @@ export function registerBoardTools(server, getClient) {
     },
     async ({ project }) => {
       const client = getClient();
-      try {
-        const target = project || (await client
-          .get("/admin/projects", { params: { fields: "shortName" } })
-          ?.then((ps) => ps?.[0]?.shortName));
-        if (!target) {
-          return jsonResult({
-            error: "No project given and none visible to this token.",
-          });
-        }
-        const fields = await client.get(
-          `/admin/projects/${encodeURIComponent(target)}/customFields`,
-          { params: { fields: "id,name" } }
-        );
-        const state = (fields ?? []).find((f) => f.name === "State");
-        if (!state) {
-          return jsonResult({
-            error:
-              `State field not visible for project ${target} — the token may ` +
-              "lack admin rights on this instance.",
-          });
-        }
-        const values = await client.get(
-          `/admin/customFields/${state.id}/values`,
-          { params: { fields: "name,presentation,localizedName,isDefault" } }
-        );
-        return jsonResult(values ?? []);
-      } catch (err) {
-        if (isNotFound(err)) {
-          return jsonResult({
-            error:
-              "State values are not exposed by this YouTrack instance " +
-              "(admin customFields API returns 404 — likely insufficient " +
-              "token permissions). Use yt_search_issues to discover states in practice.",
-          });
-        }
-        throw err;
+      const result = await getProjectFields(client, project, "State");
+      if (result.error) return jsonResult({ error: result.error });
+      const values = result.fields?.[0]?.values ?? null;
+      if (values === null) {
+        return jsonResult({
+          error:
+            "State values are not exposed by this YouTrack instance " +
+            "(admin customFields API returns 404 — likely insufficient " +
+            "token permissions). Use yt_search_issues to discover states in practice.",
+        });
       }
+      return jsonResult(values);
     }
   );
 

@@ -12,8 +12,37 @@ const ISSUE_FIELDS =
   "reporter(login,name),created,updated,tags(name)," +
   "customFields(name,$type,value(name,localizedName,login))";
 
+const BASE_FIELDS =
+  "id,numberInProject,project(shortName,name),summary," +
+  "customFields(name,$type,value(name,localizedName,login))";
+
+// Names the normalized output uses; on the wire they live in customFields,
+// so asking for them in `fields` must not suppress the rest of the entity.
+const FLAT_CF_NAMES = new Set([
+  "state", "priority", "type", "subsystem", "assignee",
+]);
+
+export function buildFieldsParam(fields) {
+  if (!fields || fields === ISSUE_FIELDS) return ISSUE_FIELDS;
+  const extras = fields
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((s) => !FLAT_CF_NAMES.has(s.toLowerCase().replace(/\(.*$/, "")));
+  const merged = new Set([...BASE_FIELDS.split(","), ...extras]);
+  return [...merged].join(",");
+}
+
 function jsonResult(data) {
   return { content: [{ type: "text", text: JSON.stringify(data ?? null, null, 2) }] };
+}
+
+// A command response carrying a non-empty `error` is a failure, even though
+// the HTTP request itself succeeded (gaprest returns {output, error} with 200).
+function commandResult(data) {
+  const res = jsonResult(data);
+  if (data?.error) res.isError = true;
+  return res;
 }
 
 function cfValue(issue, name) {
@@ -62,7 +91,7 @@ export function normalizeIssue(i) {
   return out;
 }
 
-async function resolveProjectId(client, project) {
+export async function resolveProjectId(client, project) {
   const projects = await client.get("/admin/projects", {
     params: { fields: "id,name,shortName" },
   });
@@ -87,13 +116,21 @@ export function registerIssueTools(server, getClient) {
       inputSchema: {
         query: z.string().describe("YouTrack Search Language query"),
         max_results: z.number().int().default(25).describe("Max number of results"),
-        fields: z.string().default(ISSUE_FIELDS).describe("YouTrack field selector"),
+        fields: z
+          .string()
+          .default(ISSUE_FIELDS)
+          .describe(
+            "YouTrack field selector. The baseline needed for normalization " +
+            "(id, numberInProject, project, summary, customFields) is always " +
+            "merged in; flat names like `subsystem` are accepted and ignored " +
+            "as extras."
+          ),
       },
     },
     async ({ query, max_results, fields }) => {
       const client = getClient();
       const data = await client.get("/issues", {
-        params: { query, $top: max_results, fields },
+        params: { query, $top: max_results, fields: buildFieldsParam(fields) },
       });
       return jsonResult((data ?? []).map(normalizeIssue));
     }
@@ -126,7 +163,8 @@ export function registerIssueTools(server, getClient) {
       description:
         "Create an issue in a project (by name or short name, e.g. 'ABC').\n\n" +
         "`command` is an optional YouTrack command applied right after creation,\n" +
-        "e.g. '#State Backlog #Priority Medium'.\n" +
+        "e.g. '#State Backlog #Priority Medium'. If the command fails, the\n" +
+        "issue is still created and returned with a `command_error` field.\n" +
         "Returns the created issue (id + number).",
       inputSchema: {
         project: z.string().describe("Project name or short name, e.g. 'ABC'"),
@@ -144,6 +182,7 @@ export function registerIssueTools(server, getClient) {
         json: body,
         params: { fields: "id" },
       });
+      let commandError = "";
       if (command && created?.id) {
         const full = await client.get(`/issues/${created.id}`, {
           params: { fields: "project(shortName),numberInProject" },
@@ -152,12 +191,21 @@ export function registerIssueTools(server, getClient) {
         const cmd = command.trimStart().startsWith("#")
           ? command.trim()
           : "#" + command.trim();
-        await client.runCommand(`${cmd} ${number}`);
+        try {
+          const res = await client.runCommand(`${cmd} ${number}`);
+          if (res.error) commandError = res.error;
+        } catch (err) {
+          // The issue exists regardless — losing its id here is worse than
+          // reporting a partial success.
+          commandError = err.message;
+        }
       }
       const data = await client.get(`/issues/${created.id}`, {
         params: { fields: ISSUE_FIELDS },
       });
-      return jsonResult(normalizeIssue(data));
+      const issue = normalizeIssue(data);
+      if (commandError) issue.command_error = commandError;
+      return jsonResult(issue);
     }
   );
 
@@ -171,7 +219,11 @@ export function registerIssueTools(server, getClient) {
         "  - '#State Fixed ABC-123'                 -> set state\n" +
         "  - 'tag -{Feature Bug} ABC-123 ABC-124'   -> remove tag from issues\n" +
         "  - '#assignee john ABC-123'               -> set assignee\n" +
-        "The target issue IDs must be included INSIDE the command string.",
+        "The target issue IDs must be included INSIDE the command string.\n\n" +
+        "On this instance single-word bundle values are written WITHOUT curly " +
+        "braces ('#Subsystem Backend', not '#Subsystem {Backend}'); commands " +
+        "with braces are retried automatically once. Use yt_get_project_fields " +
+        "to see the exact accepted values.",
       inputSchema: {
         command: z.string().describe("YouTrack command string"),
       },
@@ -179,7 +231,7 @@ export function registerIssueTools(server, getClient) {
     async ({ command }) => {
       const client = getClient();
       const data = await client.runCommand(command);
-      return jsonResult(data);
+      return commandResult(data);
     }
   );
 
@@ -190,20 +242,40 @@ export function registerIssueTools(server, getClient) {
       description:
         "Update subject/description of an issue directly.\n\n" +
         "For state/priority/tags/assignee use yt_apply_command instead —\n" +
-        "YouTrack workflows react to commands, not raw field writes.",
+        "YouTrack workflows react to commands, not raw field writes.\n\n" +
+        "`expected_updated` (the `updated` timestamp last read via " +
+        "yt_get_issue) guards against overwriting concurrent edits: if the " +
+        "issue changed in the meantime the update is rejected.",
       inputSchema: {
         issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
         subject: z.string().optional().describe("New subject"),
         description: z.string().optional().describe("New description"),
+        expected_updated: z
+          .number()
+          .int()
+          .optional()
+          .describe("Issue `updated` timestamp from the last read; abort on mismatch"),
       },
     },
-    async ({ issue_id, subject, description }) => {
+    async ({ issue_id, subject, description, expected_updated }) => {
       const client = getClient();
       const body = {};
       if (subject !== undefined) body.summary = subject;
       if (description !== undefined) body.description = description;
       if (Object.keys(body).length === 0) {
         throw new Error("Nothing to update: pass subject and/or description.");
+      }
+      if (expected_updated !== undefined) {
+        const current = await client.get(`/issues/${encodeURIComponent(issue_id)}`, {
+          params: { fields: "updated" },
+        });
+        if (current?.updated !== undefined && current.updated !== expected_updated) {
+          throw new Error(
+            `Conflict: issue ${issue_id} was modified since the read ` +
+            `(updated=${current.updated}, expected_updated=${expected_updated}). ` +
+            "Re-read the issue and re-apply the change."
+          );
+        }
       }
       await client.post(`/issues/${encodeURIComponent(issue_id)}`, { json: body });
       const data = await client.get(`/issues/${encodeURIComponent(issue_id)}`, {

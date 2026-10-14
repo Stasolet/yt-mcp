@@ -138,6 +138,11 @@ export class YouTrackClient {
    * Issue ids must be present in the string; they are resolved to internal
    * ids and passed via the `issues` array. This server instance does NOT
    * parse targets out of the command text.
+   *
+   * Empirically this instance rejects single-word bundle values wrapped in
+   * curly braces ("#Subsystem {Backend}" -> 400 "Subsystem expected:
+   * {Backend}"), so on such a rejection the command is retried once with
+   * braces removed from brace groups that contain no spaces.
    */
   async runCommand(command) {
     const ID_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
@@ -160,9 +165,40 @@ export class YouTrackClient {
         return { id: issue.id };
       })
     );
-    const data = await this.post("/commands", {
-      json: { command: text, query: text.replace(/#/g, ""), issues },
-    });
+    const exec = (cmd) =>
+      this.post("/commands", {
+        json: { command: cmd, query: cmd.replace(/#/g, ""), issues },
+      });
+
+    let data;
+    let firstErr = null;
+    try {
+      data = await exec(text);
+    } catch (err) {
+      firstErr = err;
+      const stripped = text.replace(/\{([^{}\s]+)\}/g, "$1");
+      const retryable =
+        err?.statusCode === 400 && /expected/i.test(err.message ?? "") &&
+        stripped !== text;
+      if (retryable) {
+        try {
+          data = await exec(stripped);
+        } catch (err2) {
+          throw new Error(
+            `${err2.message} — retry without curly braces ("${stripped}") ` +
+            `also failed; original error: ${err.message}`
+          );
+        }
+      }
+    }
+    if (data === undefined) {
+      if (/\{[^{}\s]+\}/.test(text)) {
+        firstErr.message +=
+          " — hint: this instance may reject single-word bundle values in " +
+          'curly braces; write them plain, e.g. "#Subsystem Backend".';
+      }
+      throw firstErr;
+    }
     return { output: data?.output ?? "Done", error: data?.error ?? "" };
   }
 }

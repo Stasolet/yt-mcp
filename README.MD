@@ -105,15 +105,15 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
 }
 ```
 
-## Инструменты (17 шт.)
+## Инструменты (19 шт.)
 
 ### Issues
 | Инструмент | Описание |
 |---|---|
-| `yt_search_issues` | Поиск по YouTrack Search Language (`project:ABC State: Unresolved`) |
+| `yt_search_issues` | Поиск по YouTrack Search Language (`project:ABC State: Unresolved`); baseline-поля всегда домешиваются в `fields` |
 | `yt_get_issue` | Issue целиком: описание, поля, ссылки, теги |
-| `yt_create_issue` | Создание + опциональная команда сразу после создания |
-| `yt_update_issue` | Правка subject/description (остальное — командами) |
+| `yt_create_issue` | Создание + опциональная команда; при ошибке команды issue всё равно возвращается с полем `command_error` |
+| `yt_update_issue` | Правка subject/description (остальное — командами); `expected_updated` защищает от перезаписи параллельной правки |
 | `yt_apply_command` | Любая команда из Command Reference (`#State Fixed ABC-1`) |
 | `yt_get_comments` / `yt_add_comment` | Комментарии |
 | `yt_get_attachments` | Вложения |
@@ -126,8 +126,24 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
 | `yt_get_board_issues` | Issues на доске (+фильтр) |
 | `yt_get_board_columns` | Колонки доски |
 | `yt_list_projects` / `yt_get_project_issues` | Проекты и их issues |
-| `yt_get_issue_states` | Доступные состояния (пригодится перед `#State ...`) |
+| `yt_get_issue_states` | Доступные состояния (обёртка над `yt_get_project_fields` для поля State) |
 | `yt_search_users` | Поиск пользователей (для assignee) |
+
+### Метаданные и raw-доступ
+| Инструмент | Описание |
+|---|---|
+| `yt_get_project_fields` | Кастомные поля проекта и допустимые значения бандлов (Subsystem/Priority/...); проверять перед командами |
+| `yt_rest_get` | Read-only GET произвольного `/api/...` эндпоинта с параметрами (только чтение) |
+
+## Рекомендации по командам
+
+- Значения полей с одним словом пишутся **без фигурных скобок**: `#Subsystem Backend`,
+  а не `#Subsystem {Backend}` (инстанс отвечает 400 `Subsystem expected: {Backend}`);
+  сервер сам делает одну повторную попытку без скобок. Скобки остаются нужны для
+  многословных значений, например тегов: `tag {GitLab merge request} ABC-1`.
+- Точные допустимые значения поля — в `yt_get_project_fields`.
+- `yt_apply_command` возвращает `isError`, если YouTrack ответил непустым полем
+  `error` (HTTP при этом может быть 200).
 
 ## Почему изменения статуса — через команды
 
@@ -150,6 +166,7 @@ src/
   client.js           # HTTP-клиент (глобальный fetch, Bearer-токен)
   tools-issues.js     # инструменты по issues
   tools-boards.js     # инструменты по доскам/проектам
+  tools-meta.js       # поля проекта + read-only raw GET
   server.js           # сборка MCP-сервера (@modelcontextprotocol/sdk, stdio)
 tests/server.test.js  # smoke-тест
 ```

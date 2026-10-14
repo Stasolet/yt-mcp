@@ -1,6 +1,6 @@
 {
   "name": "youtrack-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for JetBrains YouTrack 2022.3 (issues + boards) for opencode",
   "type": "module",
   "license": "MIT",

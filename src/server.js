@@ -14,12 +14,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { YouTrackClient } from "./client.js";
 import { registerIssueTools } from "./tools-issues.js";
 import { registerBoardTools } from "./tools-boards.js";
+import { registerMetaTools } from "./tools-meta.js";
 
 const INSTRUCTIONS =
   "Tools for JetBrains YouTrack 2022.3: issues (search/read/create/update/" +
-  "comments/attachments), commands (Command Reference syntax), Agile boards " +
-  "and projects. Issue state/priority/tags/assignee changes go through " +
-  "yt_apply_command so that YouTrack workflows are triggered correctly.";
+  "comments/attachments), commands (Command Reference syntax), Agile boards, " +
+  "projects and project field values (yt_get_project_fields), plus a " +
+  "read-only raw API escape hatch (yt_rest_get). Issue state/priority/tags/" +
+  "assignee changes go through yt_apply_command so that YouTrack workflows " +
+  "are triggered correctly; single-word bundle values in commands are " +
+  "written without curly braces.";
 
 let client = null;
 
@@ -34,12 +38,13 @@ export function getClient() {
 /** Build the MCP server with all tools registered. */
 export function createServer() {
   const server = new McpServer(
-    { name: "youtrack", version: "0.1.0" },
+    { name: "youtrack", version: "0.2.0" },
     { instructions: INSTRUCTIONS }
   );
 
   registerIssueTools(server, getClient);
   registerBoardTools(server, getClient);
+  registerMetaTools(server, getClient);
 
   return server;
 }
