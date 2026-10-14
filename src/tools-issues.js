@@ -1,19 +1,77 @@
 /**
- * Issue-related MCP tools: search, read, create, update, comments, commands.
+ * Issue-related MCP tools.
+ *
+ * This server speaks the legacy ("gaprest") YouTrack REST entity model:
+ * `summary` instead of `subject`, and State/Priority/Type/Assignee/Subsystem
+ * live in `customFields`. Responses are normalized into a compact shape.
  */
 import { z } from "zod";
 
-// Compact field selection to keep responses small.
 const ISSUE_FIELDS =
-  "number,id,subject,description,reporter(login,name),assignee(login,name)," +
-  "state(name,presentation),priority(presentation)," +
-  "type(presentation),project(name,shortName),tags(name)," +
-  "links($all,$type(name,direction,presentation))," +
-  "attachments(id,name,url,contentType,displayInBundle),comments(count)," +
-  "created,updated";
+  "id,numberInProject,project(shortName,name),summary,description," +
+  "reporter(login,name),created,updated,tags(name)," +
+  "customFields(name,$type,value(name,localizedName,login))";
 
 function jsonResult(data) {
   return { content: [{ type: "text", text: JSON.stringify(data ?? null, null, 2) }] };
+}
+
+function cfValue(issue, name) {
+  const field = (issue?.customFields ?? []).find((f) => f.name === name);
+  return field ? field.value ?? null : null;
+}
+
+function bundleName(value) {
+  if (!value) return undefined;
+  return value.name ?? value.localizedName ?? undefined;
+}
+
+export function normalizeIssue(i) {
+  if (!i) return i;
+  const out = {
+    id: i.id,
+    number:
+      i.readableNumber ??
+      (i.project?.shortName != null && i.numberInProject != null
+        ? `${i.project.shortName}-${i.numberInProject}`
+        : undefined),
+    subject: i.summary ?? i.subject,
+    description: i.description,
+    project: i.project?.shortName ?? i.project?.name,
+    state: bundleName(cfValue(i, "State")),
+    priority: bundleName(cfValue(i, "Priority")),
+    type: bundleName(cfValue(i, "Type")),
+    subsystem: bundleName(cfValue(i, "Subsystem")),
+    assignee: (cfValue(i, "Assignee") ?? []).map((u) => ({
+      login: u.login,
+      name: u.name,
+    })),
+    reporter: i.reporter
+      ? { login: i.reporter.login, name: i.reporter.name }
+      : undefined,
+    tags: (i.tags ?? []).map((t) => t.name),
+    created: i.created,
+    updated: i.updated,
+  };
+  for (const key of Object.keys(out)) {
+    if (out[key] === undefined ||
+        (Array.isArray(out[key]) && out[key].length === 0 && key !== "subject")) {
+      delete out[key];
+    }
+  }
+  return out;
+}
+
+async function resolveProjectId(client, project) {
+  const projects = await client.get("/admin/projects", {
+    params: { fields: "id,name,shortName" },
+  });
+  const needle = project.toLowerCase();
+  const found = (projects ?? []).find(
+    (p) => p.shortName?.toLowerCase() === needle || p.name?.toLowerCase() === needle
+  );
+  if (!found) throw new Error(`Project not found: ${project}`);
+  return found;
 }
 
 export function registerIssueTools(server, getClient) {
@@ -37,7 +95,7 @@ export function registerIssueTools(server, getClient) {
       const data = await client.get("/issues", {
         params: { query, $top: max_results, fields },
       });
-      return jsonResult(data ?? []);
+      return jsonResult((data ?? []).map(normalizeIssue));
     }
   );
 
@@ -54,10 +112,10 @@ export function registerIssueTools(server, getClient) {
     },
     async ({ issue_id }) => {
       const client = getClient();
-      const data = await client.get(`/issues/${issue_id}`, {
+      const data = await client.get(`/issues/${encodeURIComponent(issue_id)}`, {
         params: { fields: ISSUE_FIELDS },
       });
-      return jsonResult(data);
+      return jsonResult(normalizeIssue(data));
     }
   );
 
@@ -79,21 +137,27 @@ export function registerIssueTools(server, getClient) {
     },
     async ({ project, subject, description, command }) => {
       const client = getClient();
-      const body = { project: { name: project }, subject };
+      const proj = await resolveProjectId(client, project);
+      const body = { project: { id: proj.id }, summary: subject };
       if (description) body.description = description;
-      const created = await client.post("/issues?fields=number,id,subject", {
+      const created = await client.post("/issues", {
         json: body,
+        params: { fields: "id" },
       });
-      if (command) {
+      if (command && created?.id) {
+        const full = await client.get(`/issues/${created.id}`, {
+          params: { fields: "project(shortName),numberInProject" },
+        });
+        const number = `${full.project?.shortName}-${full.numberInProject}`;
         const cmd = command.trimStart().startsWith("#")
           ? command.trim()
           : "#" + command.trim();
-        await client.runCommand(`${cmd} ${created.number}`);
+        await client.runCommand(`${cmd} ${number}`);
       }
       const data = await client.get(`/issues/${created.id}`, {
-        params: { fields: "number,id,subject,state(name,presentation)" },
+        params: { fields: ISSUE_FIELDS },
       });
-      return jsonResult(data);
+      return jsonResult(normalizeIssue(data));
     }
   );
 
@@ -136,16 +200,18 @@ export function registerIssueTools(server, getClient) {
     async ({ issue_id, subject, description }) => {
       const client = getClient();
       const body = {};
-      if (subject !== undefined) body.subject = subject;
+      if (subject !== undefined) body.summary = subject;
       if (description !== undefined) body.description = description;
       if (Object.keys(body).length === 0) {
         throw new Error("Nothing to update: pass subject and/or description.");
       }
-      await client.post(`/issues/${issue_id}`, { json: body });
-      const data = await client.get(`/issues/${issue_id}`, {
-        params: { fields: "number,id,subject" },
+      await client.post(`/issues/${encodeURIComponent(issue_id)}`, { json: body });
+      const data = await client.get(`/issues/${encodeURIComponent(issue_id)}`, {
+        params: {
+          fields: "id,project(shortName),numberInProject,summary",
+        },
       });
-      return jsonResult(data);
+      return jsonResult(normalizeIssue(data));
     }
   );
 
@@ -161,14 +227,16 @@ export function registerIssueTools(server, getClient) {
     },
     async ({ issue_id, count }) => {
       const client = getClient();
-      const data = await client.get(`/issues/${issue_id}/comments`, {
-        params: {
-          $top: count,
-          fields: "comment(text,author(login,name),created,updated,pinned)",
-        },
-      });
-      const comments = (data ?? []).map((c) => c.comment ?? c);
-      return jsonResult(comments);
+      const data = await client.get(
+        `/issues/${encodeURIComponent(issue_id)}/comments`,
+        {
+          params: {
+            $top: count,
+            fields: "text,author(login,name),created,updated",
+          },
+        }
+      );
+      return jsonResult(data ?? []);
     }
   );
 
@@ -189,10 +257,10 @@ export function registerIssueTools(server, getClient) {
       const client = getClient();
       const body = { text };
       if (visible_to) body.permittedGroups = [{ name: visible_to }];
-      const data = await client.post(`/issues/${issue_id}/comments`, {
-        params: { fields: "id,text" },
-        json: body,
-      });
+      const data = await client.post(
+        `/issues/${encodeURIComponent(issue_id)}/comments`,
+        { params: { fields: "id,text" }, json: body }
+      );
       return jsonResult(data);
     }
   );
@@ -208,11 +276,14 @@ export function registerIssueTools(server, getClient) {
     },
     async ({ issue_id }) => {
       const client = getClient();
-      const data = await client.get(`/issues/${issue_id}/attachments`, {
-        params: {
-          fields: "id,name,url,contentType,fileSize,author(login,name)",
-        },
-      });
+      const data = await client.get(
+        `/issues/${encodeURIComponent(issue_id)}/attachments`,
+        {
+          params: {
+            fields: "id,name,url,contentType,fileSize,author(login,name)",
+          },
+        }
+      );
       return jsonResult(data ?? []);
     }
   );
@@ -230,14 +301,24 @@ export function registerIssueTools(server, getClient) {
     },
     async ({ issue_id }) => {
       const client = getClient();
-      const links = await client.get(`/issues/${issue_id}/links`, {
-        params: { fields: "$all,srcLink($all),dstLink($all)" },
-      });
+      const links = await client.get(
+        `/issues/${encodeURIComponent(issue_id)}/links`,
+        { params: { fields: "$all" } }
+      );
       const result = (links ?? []).filter(
         (link) =>
           link.$type === "vcs-issue-link" ||
-          String(link.srcId ?? "").toLowerCase().includes("vcs")
+          String(link.$type ?? "").toLowerCase().includes("vcs") ||
+          String(link.srcId ?? link.name ?? "").toLowerCase().includes("vcs")
       );
+      if (links?.length && result.length === 0) {
+        return jsonResult({
+          note:
+            "No VCS-type links found. Note: this server instance may return " +
+            "issue links without detail fields (permissions/API version).",
+          links,
+        });
+      }
       return jsonResult(result);
     }
   );

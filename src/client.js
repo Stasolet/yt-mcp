@@ -1,15 +1,18 @@
 /**
- * Thin async HTTP client for the YouTrack REST API (2022.3).
+ * Thin async HTTP client for the YouTrack REST API.
  *
- * YouTrack 2022..x exposes:
- *   * REST /api — primary API used here (issues, projects, boards/agiles, commands)
- *   * GraphQL /api/graphql — not used in this server yet
+ * NOTE: youtrack.lab403.inforion.ru implements the "gaprest" transitional REST
+ * API, NOT the documented 2022.3 one. Empirically (2026-10):
+ *   * partial-response param is `fields` (plain, without `$`); `$fields` is ignored
+ *   * pagination param is `$top` (`max`, `$max`, `count` are ignored)
+ *   * issue entities use legacy names: `summary`, `numberInProject`,
+ *     `customFields` (State/Priority/Type/Assignee/Subsystem live there)
+ *   * commands: POST /api/commands with JSON body
+ *     { command, query, issues: [{ id }] }  (query text must not contain '#',
+ *     `issues` must carry already-resolved internal ids)
+ *   * NO /api/agiles, NO /api/graphql, NO /api/me (but /api/users/me works)
  *
- * Authentication: permanent token sent via the "Bearer" Authorization header.
- * Tokens are issued per-user in YouTrack: Profile -> Applications -> Generate Token.
- * The GitLab integration (16.8) does NOT provide an API token; it only syncs
- * vcs-references. We always talk to YouTrack directly.
- *
+ * Authentication: permanent token via the "Bearer" Authorization header.
  * Uses the built-in fetch (Node >= 18) — no external HTTP dependency.
  */
 
@@ -20,6 +23,10 @@ export class YouTrackError extends Error {
     this.statusCode = statusCode;
     this.message = message;
   }
+}
+
+function truthy(v) {
+  return /^(1|true|yes|on)$/i.test(String(v ?? ""));
 }
 
 export class YouTrackClient {
@@ -37,12 +44,16 @@ export class YouTrackClient {
           "Profile -> Applications -> Generate token."
       );
     }
+    if (truthy(process.env.YOUTRACK_TLS_INSECURE)) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+      console.error(
+        "youtrack-mcp: TLS certificate verification is DISABLED " +
+          "(YOUTRACK_TLS_INSECURE) — intended for internal self-signed instances."
+      );
+    }
     this.timeoutMs = timeoutMs;
   }
 
-  /**
-   * YouTrack uses $params/$fields query params; URLSearchParams encodes "$" fine.
-   */
   async request(method, path, { params = undefined, json = undefined } = {}) {
     const url = new URL(`/api${path}`, this.baseUrl);
     if (params) {
@@ -68,6 +79,16 @@ export class YouTrackClient {
         redirect: "follow",
         signal: controller.signal,
       });
+    } catch (err) {
+      const cause = err?.cause?.code || err?.cause?.message || "";
+      let hint = "";
+      if (/certificate/i.test(cause)) {
+        hint =
+          " — the server uses a self-signed/internal CA certificate. Set " +
+          "YOUTRACK_TLS_INSECURE=1 (or NODE_EXTRA_CA_CERTS=/path/to/ca.pem) " +
+          "in the MCP server environment.";
+      }
+      throw new Error(`${method} ${url}: ${err.message}${cause ? ` (${cause})` : ""}${hint}`);
     } finally {
       clearTimeout(timer);
     }
@@ -113,14 +134,35 @@ export class YouTrackClient {
   // ---------- commands ----------
 
   /**
-   * Execute a YouTrack command string (POST /admin/commands?command=...).
-   *
-   * This mirrors the CLI from the Command Reference docs but goes through
-   * the REST API, which is available in 2022.3.
-   * Returns { output: string, error: string }.
+   * Execute a YouTrack command string, e.g. "#State Fixed ABC-123".
+   * Issue ids must be present in the string; they are resolved to internal
+   * ids and passed via the `issues` array. This server instance does NOT
+   * parse targets out of the command text.
    */
   async runCommand(command) {
-    const data = await this.post("/admin/commands", { params: { command } });
-    return data ?? { output: "", error: "" };
+    const ID_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+    const readableIds = [...new Set(command.match(ID_RE) ?? [])];
+    if (readableIds.length === 0) {
+      throw new Error(
+        'No issue ids (e.g. "ABC-123") found in the command string.'
+      );
+    }
+    const text = command.replace(ID_RE, " ").replace(/\s+/g, " ").trim();
+    if (!text) {
+      throw new Error("The command contains only issue ids, nothing to apply.");
+    }
+    const issues = await Promise.all(
+      readableIds.map(async (rid) => {
+        const issue = await this.get(`/issues/${encodeURIComponent(rid)}`, {
+          params: { fields: "id" },
+        });
+        if (!issue?.id) throw new Error(`Cannot resolve issue ${rid}`);
+        return { id: issue.id };
+      })
+    );
+    const data = await this.post("/commands", {
+      json: { command: text, query: text.replace(/#/g, ""), issues },
+    });
+    return { output: data?.output ?? "Done", error: data?.error ?? "" };
   }
 }

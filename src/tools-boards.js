@@ -1,16 +1,48 @@
 /**
- * Board (Agile) & project MCP tools for YouTrack 2022.3.
+ * Project/user MCP tools, plus Agile board tools.
+ *
+ * NOTE: the YouTrack instance in use (legacy "gaprest" REST) exposes NO
+ * /api/agiles — board tools return an explanatory message instead of a raw 404.
  */
 import { z } from "zod";
-
-const BOARD_FIELDS =
-  "id,name,projectRefs(project(name,shortName)),pivots(field(name)),author(login,name)";
+import { normalizeIssue } from "./tools-issues.js";
 
 const SHORT_ISSUE_FIELDS =
-  "number,subject,state(name,presentation),assignee(login,name),priority(presentation)";
+  "id,project(shortName),numberInProject,summary," +
+  "customFields(name,value(name,localizedName))";
 
 function jsonResult(data) {
   return { content: [{ type: "text", text: JSON.stringify(data ?? null, null, 2) }] };
+}
+
+function textResult(text) {
+  return { content: [{ type: "text", text }] };
+}
+
+function isNotFound(err) {
+  return err?.name === "YouTrackError" && err.statusCode === 404;
+}
+
+// This instance exposes GET /api/agiles (id+name only) but no
+// /agiles/{id}/columns and /agiles/{id}/issues subresources.
+
+async function boardCall(getClient, fn, notAvailableMessage) {
+  try {
+    return await fn(getClient());
+  } catch (err) {
+    if (isNotFound(err)) return textResult(notAvailableMessage);
+    throw err;
+  }
+}
+
+async function resolveBoard(client, board_id) {
+  const boards = await client.get("/agiles", { params: { fields: "id,name" } });
+  const needle = board_id.toLowerCase();
+  const board = (boards ?? []).find(
+    (b) => b.id === board_id || b.name?.toLowerCase() === needle
+  );
+  if (!board) throw new Error(`Board not found: ${board_id}`);
+  return board;
 }
 
 export function registerBoardTools(server, getClient) {
@@ -21,11 +53,17 @@ export function registerBoardTools(server, getClient) {
       description: "List all Agile boards the token's user can see.",
       inputSchema: {},
     },
-    async () => {
-      const client = getClient();
-      const data = await client.get("/agiles", { params: { fields: BOARD_FIELDS } });
-      return jsonResult(data ?? []);
-    }
+    async () =>
+      boardCall(
+        getClient,
+        async (client) => {
+          const data = await client.get("/agiles", {
+            params: { fields: "id,name" },
+          });
+          return jsonResult(data);
+        },
+        "Agile boards API is not available on this YouTrack server (/api/agiles -> 404)."
+      )
   );
 
   server.registerTool(
@@ -34,18 +72,15 @@ export function registerBoardTools(server, getClient) {
       title: "Get an Agile board",
       description:
         "Get one board by its id or name.\n\n" +
-        "YouTrack accepts both the internal id and the human-readable name " +
-        "in the URL path (/api/agiles/{id}/), so pass either.",
+        "Note: this server instance exposes only id and name per board.",
       inputSchema: {
         board_id: z.string().describe("Board id or name"),
       },
     },
     async ({ board_id }) => {
       const client = getClient();
-      const data = await client.get(`/agiles/${board_id}`, {
-        params: { fields: `${BOARD_FIELDS},description` },
-      });
-      return jsonResult(data);
+      const board = await resolveBoard(client, board_id);
+      return jsonResult(board);
     }
   );
 
@@ -55,7 +90,9 @@ export function registerBoardTools(server, getClient) {
       title: "List issues on a board",
       description:
         "List issues on a board (optionally filtered by extra query).\n\n" +
-        "Uses GET /agiles/{id}/issues — works for Kanban and Scrum boards.",
+        "The native /agiles/{id}/issues endpoint is not implemented on this " +
+        "server, so issues are fetched by the board's project (board name is " +
+        "matched against project names).",
       inputSchema: {
         board_id: z.string().describe("Board id or name"),
         query: z.string().default("").describe("Extra YouTrack query filter"),
@@ -64,10 +101,17 @@ export function registerBoardTools(server, getClient) {
     },
     async ({ board_id, query, max_results }) => {
       const client = getClient();
-      const params = { $top: max_results, fields: SHORT_ISSUE_FIELDS };
-      if (query) params.query = query;
-      const data = await client.get(`/agiles/${board_id}/issues`, { params });
-      return jsonResult(data ?? []);
+      const board = await resolveBoard(client, board_id);
+      const fullQuery = `project:${board.name}` + (query ? ` ${query}` : "");
+      const data = await client.get("/issues", {
+        params: { query: fullQuery, $top: max_results, fields: SHORT_ISSUE_FIELDS },
+      });
+      return jsonResult({
+        note:
+          "Approximation: /agiles/{id}/issues is not implemented on this " +
+          "server; fetched by project matching the board name.",
+        issues: (data ?? []).map(normalizeIssue),
+      });
     }
   );
 
@@ -83,13 +127,19 @@ export function registerBoardTools(server, getClient) {
         board_id: z.string().describe("Board id or name"),
       },
     },
-    async ({ board_id }) => {
-      const client = getClient();
-      const data = await client.get(`/agiles/${board_id}/columns`, {
-        params: { fields: "name,id,query,color" },
-      });
-      return jsonResult(data ?? []);
-    }
+    async ({ board_id }) =>
+      boardCall(
+        getClient,
+        async (client) => {
+          const data = await client.get(
+            `/agiles/${encodeURIComponent(board_id)}/columns`,
+            { params: { fields: "name,id,query,color" } }
+          );
+          return jsonResult(data);
+        },
+        `Board "${board_id}": column/stage data is not exposed by this YouTrack ` +
+          "server (/agiles/{id}/columns -> 404)."
+      )
   );
 
   server.registerTool(
@@ -101,7 +151,7 @@ export function registerBoardTools(server, getClient) {
     },
     async () => {
       const client = getClient();
-      const data = await client.get("/projects", {
+      const data = await client.get("/admin/projects", {
         params: { fields: "id,name,shortName,archived" },
       });
       return jsonResult(data ?? []);
@@ -129,7 +179,7 @@ export function registerBoardTools(server, getClient) {
           fields: SHORT_ISSUE_FIELDS,
         },
       });
-      return jsonResult(data ?? []);
+      return jsonResult((data ?? []).map(normalizeIssue));
     }
   );
 
@@ -146,22 +196,43 @@ export function registerBoardTools(server, getClient) {
     },
     async ({ project }) => {
       const client = getClient();
-      if (project) {
-        const data = await client.get(
-          `/admin/projects/${project}/customFields/state/values`,
-          { params: { fields: "$all,name,presentation" } }
+      try {
+        const target = project || (await client
+          .get("/admin/projects", { params: { fields: "shortName" } })
+          ?.then((ps) => ps?.[0]?.shortName));
+        if (!target) {
+          return jsonResult({
+            error: "No project given and none visible to this token.",
+          });
+        }
+        const fields = await client.get(
+          `/admin/projects/${encodeURIComponent(target)}/customFields`,
+          { params: { fields: "id,name" } }
         );
-        return jsonResult((data ?? []).map((v) => v.element ?? v));
+        const state = (fields ?? []).find((f) => f.name === "State");
+        if (!state) {
+          return jsonResult({
+            error:
+              `State field not visible for project ${target} — the token may ` +
+              "lack admin rights on this instance.",
+          });
+        }
+        const values = await client.get(
+          `/admin/customFields/${state.id}/values`,
+          { params: { fields: "name,presentation,localizedName,isDefault" } }
+        );
+        return jsonResult(values ?? []);
+      } catch (err) {
+        if (isNotFound(err)) {
+          return jsonResult({
+            error:
+              "State values are not exposed by this YouTrack instance " +
+              "(admin customFields API returns 404 — likely insufficient " +
+              "token permissions). Use yt_search_issues to discover states in practice.",
+          });
+        }
+        throw err;
       }
-      let data = await client.get("/admin/customFields/field64/options", {
-        params: { fields: "name,presentation,localizedName,isDefault" },
-      });
-      if (!data || (Array.isArray(data) && data.length === 0)) {
-        data = await client.get("/admin/customFields", {
-          params: { fields: "$all" },
-        });
-      }
-      return jsonResult(data ?? []);
     }
   );
 
@@ -170,9 +241,10 @@ export function registerBoardTools(server, getClient) {
     {
       title: "Search users",
       description:
-        "Find users by login/name (e.g. to set an assignee via commands).",
+        "Find users by login/name (e.g. to set an assignee via commands).\n\n" +
+        "Note: this instance matches by login/name prefix, not substring.",
       inputSchema: {
-        query: z.string().describe("Login/name substring"),
+        query: z.string().describe("Login/name prefix"),
         max_results: z.number().int().default(10).describe("Max number of results"),
       },
     },
@@ -182,7 +254,7 @@ export function registerBoardTools(server, getClient) {
         params: {
           query,
           $top: max_results,
-          fields: "login,name,email,avatar(url)",
+          fields: "login,name,email",
         },
       });
       return jsonResult(data ?? []);

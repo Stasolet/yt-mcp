@@ -1,6 +1,6 @@
 /**
  * Smoke test: MCP handshake over an in-memory pipe + tool calls against a
- * mocked YouTrack client. Mirrors the old tests_server.py.
+ * mocked YouTrack client (legacy "gaprest"-style responses).
  *
  * Run: npm test
  */
@@ -11,26 +11,41 @@ const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = await import(
   "@modelcontextprotocol/sdk/inMemory.js"
 );
-const { YouTrackClient } = await import("../src/client.js");
+const { YouTrackClient, YouTrackError } = await import("../src/client.js");
 const { createServer } = await import("../src/server.js");
 
 const calls = [];
 
 // Patch the client's request method to mock the YouTrack REST API.
 YouTrackClient.prototype.request = async function (method, path, opts = {}) {
-  const params = opts.params ?? {};
-  calls.push([method, path, params]);
+  calls.push([method, path, opts.params ?? {}, opts.json]);
   if (path === "/issues" && method === "GET") {
-    return [{ id: "issue-1", number: "ABC-1", subject: "Test issue" }];
+    return [
+      {
+        id: "2-1",
+        project: { shortName: "ABC" },
+        numberInProject: 1,
+        summary: "Test issue",
+        customFields: [
+          { name: "State", value: { name: "Fixed" } },
+        ],
+      },
+    ];
+  }
+  if (path === "/issues/ABC-1" && method === "GET") {
+    return { id: "2-1" };
   }
   if (path.startsWith("/issues/ABC-1/comments") && method === "POST") {
     return { id: "c1", text: opts.json?.text };
   }
-  if (path === "/admin/commands") {
-    return { output: "", error: "" };
+  if (path === "/commands") {
+    return {};
   }
   if (path === "/agiles") {
-    return [{ id: "agile-1", name: "My Board" }];
+    return [{ id: "122-1", name: "My Board", $type: "Agile" }];
+  }
+  if (path.startsWith("/agiles/") && path.endsWith("/columns")) {
+    throw new YouTrackError(404, '{"error":"No subresource for path columns"}');
   }
   return {};
 };
@@ -71,6 +86,8 @@ async function main() {
   });
   let data = parseResult(res);
   assert(data[0].number === "ABC-1", JSON.stringify(data));
+  assert(data[0].subject === "Test issue", JSON.stringify(data));
+  assert(data[0].state === "Fixed", JSON.stringify(data));
 
   res = await client.callTool({
     name: "yt_apply_command",
@@ -89,12 +106,37 @@ async function main() {
   data = parseResult(res);
   assert(data[0].name === "My Board", JSON.stringify(data));
 
+  res = await client.callTool({
+    name: "yt_get_board_issues",
+    arguments: { board_id: "My Board" },
+  });
+  data = parseResult(res);
+  assert(data.issues?.[0]?.number === "ABC-1", JSON.stringify(data));
+  assert(data.note, "expected approximation note");
+
+  res = await client.callTool({
+    name: "yt_get_board_columns",
+    arguments: { board_id: "122-1" },
+  });
+  assert(!res.isError, "columns should degrade gracefully");
+  assert(
+    res.content[0].text.includes("not exposed"),
+    `expected unsupported message, got: ${res.content[0].text}`
+  );
+
   // Verify the HTTP paths we hit.
   const paths = calls.map(([, p]) => p);
   assert(paths.includes("/issues"), "no /issues call");
-  assert(paths.includes("/admin/commands"), "no /admin/commands call");
-  assert(paths.includes("/agiles"), "no /agiles call");
+  assert(paths.includes("/issues/ABC-1"), "issue id was not resolved");
+  assert(paths.includes("/commands"), "no /commands call");
   assert(paths.some((p) => p.endsWith("/comments")), "no comments call");
+  assert(
+    calls.some(
+      ([m, p, , body]) =>
+        m === "POST" && p === "/commands" && body?.issues?.[0]?.id === "2-1"
+    ),
+    "commands call missing resolved issue id"
+  );
 
   await client.close();
   await server.close();
