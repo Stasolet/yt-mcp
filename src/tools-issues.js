@@ -6,6 +6,7 @@
  * live in `customFields`. Responses are normalized into a compact shape.
  */
 import { z } from "zod";
+import { YouTrackError } from "./client.js";
 
 const ISSUE_FIELDS =
   "id,numberInProject,project(shortName,name),summary,description," +
@@ -291,24 +292,42 @@ export function registerIssueTools(server, getClient) {
     "yt_get_comments",
     {
       title: "Get issue comments",
-      description: "Get the latest comments of an issue.",
+      description:
+        "Get comments of an issue, newest first. Each comment carries `id` " +
+        "(needed by yt_update_comment/yt_delete_comment), author, created.",
       inputSchema: {
         issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
-        count: z.number().int().default(20).describe("Number of comments to fetch"),
+        count: z
+          .number()
+          .int()
+          .default(20)
+          .describe("Max number of comments to return, applied after sorting"),
+        skip: z
+          .number()
+          .int()
+          .default(0)
+          .describe("Number of newest comments to skip (pagination)"),
       },
     },
-    async ({ issue_id, count }) => {
+    async ({ issue_id, count, skip }) => {
       const client = getClient();
+      // This gaprest instance ignores `sortBy` on comments, and `$top` is
+      // applied server-side before any sorting we could do — so fetch the
+      // whole list (comments per issue are few) and order it here.
       const data = await client.get(
         `/issues/${encodeURIComponent(issue_id)}/comments`,
         {
           params: {
-            $top: count,
-            fields: "text,author(login,name),created,updated",
+            fields: "id,text,author(login,name),created",
           },
         }
       );
-      return jsonResult(data ?? []);
+      // Deleting a comment in the web UI keeps the entity with empty text;
+      // tombstones are not worth returning.
+      const sorted = (data ?? [])
+        .filter((c) => c.text)
+        .sort((a, b) => (b.created ?? 0) - (a.created ?? 0));
+      return jsonResult(sorted.slice(skip, skip + count));
     }
   );
 
@@ -318,10 +337,13 @@ export function registerIssueTools(server, getClient) {
       title: "Add an issue comment",
       description:
         "Add a comment to an issue. `visible_to` is an optional user/group " +
-        "name restricting visibility.",
+        "name restricting visibility.\n\n" +
+        "The text is stored as YouTrack wiki markup VERBATIM: backticks " +
+        "create inline code, so do NOT pre-escape them with backslashes. " +
+        "Mistakes are fixable via yt_update_comment.",
       inputSchema: {
         issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
-        text: z.string().describe("Comment text"),
+        text: z.string().describe("Comment text in YouTrack wiki markup"),
         visible_to: z.string().default("").describe("Optional user/group visibility restriction"),
       },
     },
@@ -331,9 +353,68 @@ export function registerIssueTools(server, getClient) {
       if (visible_to) body.permittedGroups = [{ name: visible_to }];
       const data = await client.post(
         `/issues/${encodeURIComponent(issue_id)}/comments`,
-        { params: { fields: "id,text" }, json: body }
+        { params: { fields: "id,text,created,author(login)" }, json: body }
       );
       return jsonResult(data);
+    }
+  );
+
+  server.registerTool(
+    "yt_update_comment",
+    {
+      title: "Edit an issue comment",
+      description:
+        "Replace the text of an existing comment (text is YouTrack wiki " +
+        "markup, stored verbatim). Find `comment_id` via yt_get_comments.",
+      inputSchema: {
+        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        comment_id: z.string().describe("Comment ID, e.g. '4-10729'"),
+        text: z.string().describe("New comment text"),
+      },
+    },
+    async ({ issue_id, comment_id, text }) => {
+      const client = getClient();
+      // gaprest updates a nested resource by POSTing to its own path;
+      // PUT on the same path returns 403 for permanent tokens.
+      const data = await client.post(
+        `/issues/${encodeURIComponent(issue_id)}/comments/${encodeURIComponent(comment_id)}`,
+        { params: { fields: "id,text" }, json: { text } }
+      );
+      return jsonResult(data);
+    }
+  );
+
+  server.registerTool(
+    "yt_delete_comment",
+    {
+      title: "Delete an issue comment",
+      description:
+        "Delete a comment. Requires the token to hold the delete right — " +
+        "if YouTrack answers 403, regenerate the permanent token with the " +
+        "granted permission (the web UI deletes own comments regardless).",
+      inputSchema: {
+        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        comment_id: z.string().describe("Comment ID, e.g. '4-10729'"),
+      },
+    },
+    async ({ issue_id, comment_id }) => {
+      const client = getClient();
+      const path =
+        `/issues/${encodeURIComponent(issue_id)}/comments/${encodeURIComponent(comment_id)}`;
+      try {
+        await client.delete(path);
+      } catch (err) {
+        if (err instanceof YouTrackError && err.statusCode === 403) {
+          throw new YouTrackError(
+            err.statusCode,
+            err.message +
+              " — the permanent token lacks permission to delete comments; " +
+              "grant it (or delete the comment in the YouTrack web UI)."
+          );
+        }
+        throw err;
+      }
+      return jsonResult({ deleted: true, issue_id, comment_id });
     }
   );
 

@@ -60,6 +60,20 @@ YouTrackClient.prototype.request = async function (method, path, opts = {}) {
   if (path.startsWith("/issues/ABC-1/comments") && method === "POST") {
     return { id: "c1", text: opts.json?.text };
   }
+  if (path === "/issues/ABC-1/comments" && method === "GET") {
+    // Storage order (oldest first) — like the live gaprest instance, which
+    // ignores sortBy; the tool must sort by created itself. c_del is what a
+    // UI-deleted comment looks like: the entity survives with empty text.
+    return [
+      { id: "c1", text: "old", author: { login: "u", name: "U" }, created: 100 },
+      { id: "c3", text: "new", author: { login: "u", name: "U" }, created: 300 },
+      { id: "c2", text: "mid", author: { login: "u", name: "U" }, created: 200 },
+      { id: "c_del", text: "", author: { login: "u", name: "U" }, created: 400 },
+    ];
+  }
+  if (path === "/issues/ABC-1/comments/c403" && method === "DELETE") {
+    throw new YouTrackError(403, '{"error":"Forbidden"}');
+  }
   if (path === "/commands" && method === "POST") {
     const cmd = opts.json?.command ?? "";
     if (cmd.includes("{Backend}")) {
@@ -133,7 +147,7 @@ async function main() {
   ]);
 
   const { tools } = await client.listTools();
-  assert(tools.length === 19, `expected 19 tools, got ${tools.length}`);
+  assert(tools.length === 21, `expected 21 tools, got ${tools.length}`);
 
   const names = tools.map((t) => t.name);
   assert(names.includes("yt_get_board_issues"), "missing yt_get_board_issues");
@@ -261,6 +275,56 @@ async function main() {
   });
   data = parseResult(res);
   assert(data.text === "hello", JSON.stringify(data));
+
+  // yt_get_comments: newest first, ids exposed (the live instance ignores
+  // sortBy), tombstones of UI-deleted comments hidden.
+  res = await client.callTool({
+    name: "yt_get_comments",
+    arguments: { issue_id: "ABC-1" },
+  });
+  data = parseResult(res);
+  assert(data.map((c) => c.id).join(",") === "c3,c2,c1", JSON.stringify(data));
+
+  res = await client.callTool({
+    name: "yt_get_comments",
+    arguments: { issue_id: "ABC-1", count: 2, skip: 1 },
+  });
+  data = parseResult(res);
+  assert(data.map((c) => c.id).join(",") === "c2,c1", JSON.stringify(data));
+
+  // yt_update_comment: gaprest updates a nested resource by POSTing its path.
+  res = await client.callTool({
+    name: "yt_update_comment",
+    arguments: { issue_id: "ABC-1", comment_id: "c1", text: "fixed" },
+  });
+  data = parseResult(res);
+  assert(data.text === "fixed", JSON.stringify(data));
+  assert(
+    calls.some(([m, p]) => m === "POST" && p === "/issues/ABC-1/comments/c1"),
+    "update must POST the comment's own path"
+  );
+
+  // yt_delete_comment: happy path, and 403 explained as a token permission.
+  res = await client.callTool({
+    name: "yt_delete_comment",
+    arguments: { issue_id: "ABC-1", comment_id: "c1" },
+  });
+  data = parseResult(res);
+  assert(data.deleted === true, JSON.stringify(data));
+  assert(
+    calls.some(([m, p]) => m === "DELETE" && p === "/issues/ABC-1/comments/c1"),
+    "delete must hit the comment's own path"
+  );
+
+  res = await client.callTool({
+    name: "yt_delete_comment",
+    arguments: { issue_id: "ABC-1", comment_id: "c403" },
+  });
+  assert(res.isError, "403 on delete should fail the tool call");
+  assert(
+    res.content[0].text.includes("permission"),
+    `403 should hint about token permissions, got: ${res.content[0].text}`
+  );
 
   res = await client.callTool({ name: "yt_list_boards", arguments: {} });
   data = parseResult(res);

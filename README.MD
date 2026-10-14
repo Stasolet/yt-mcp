@@ -58,7 +58,18 @@ Node **не использует системное хранилище серт�
   `/agiles/{id}/columns` и `/agiles/{id}/issues` отсутствуют (404). Для задач
   доски используется приближение — поиск по проекту с именем доски;
 - создание issue — только с `project.id` (по имени проект не резолвится),
-  поэтому `yt_create_issue` сначала ищет проект через `/admin/projects`.
+  поэтому `yt_create_issue` сначала ищет проект через `/admin/projects`;
+- комментарии: `sortBy` игнорируется, порядок — порядок хранения (старые
+  первыми), поэтому `yt_get_comments` сортирует по `created` сам; удаление
+  комментария в веб-UI — мягкое: сущность остаётся с пустым `text`,
+  `yt_get_comments` такие записи скрывает;
+- правка вложенной сущности — `POST` на её собственный путь
+  (`POST /api/issues/{id}/comments/{commentId}` с телом `{"text": ...}`
+  возвращает 200; `PUT` на тот же путь — 403);
+- `DELETE /api/issues/{id}/comments/{commentId}` постоянный токен может
+  получать 403, даже когда веб-UI пользователя комментарий удаляет — праву
+  удаления комментариев в токене может не хватать полномочия
+  (`yt_delete_comment` так и объясняет ошибку).
 
 ## Установка
 
@@ -105,7 +116,7 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
 }
 ```
 
-## Инструменты (19 шт.)
+## Инструменты (21 шт.)
 
 ### Issues
 | Инструмент | Описание |
@@ -115,7 +126,10 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
 | `yt_create_issue` | Создание + опциональная команда; при ошибке команды issue всё равно возвращается с полем `command_error` |
 | `yt_update_issue` | Правка subject/description (остальное — командами); `expected_updated` защищает от перезаписи параллельной правки |
 | `yt_apply_command` | Любая команда из Command Reference (`#State Fixed ABC-1`) |
-| `yt_get_comments` / `yt_add_comment` | Комментарии |
+| `yt_get_comments` | Комментарии, новые сначала; отдают `id` (нужен для правки/удаления), автора, `created`; `count`/`skip` — пагинация |
+| `yt_add_comment` | Новый комментарий; текст сохраняется как wiki-разметка **как есть** (бэктики — inline-code, экранировать слешем их не нужно) |
+| `yt_update_comment` | Замена текста комментария по `comment_id` |
+| `yt_delete_comment` | Удаление комментария; при 403 подсказывает, что токену не выдано право удаления |
 | `yt_get_attachments` | Вложения |
 | `yt_get_vcs_references` | Ссылки GitLab (MR/commit), пришедшие из интеграции |
 
