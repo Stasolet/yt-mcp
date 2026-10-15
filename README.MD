@@ -127,7 +127,7 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
 | `yt_update_issue` | Правка subject/description (остальное — командами); `expected_updated` защищает от перезаписи параллельной правки |
 | `yt_apply_command` | Любая команда из Command Reference (`#State Fixed ABC-1`) |
 | `yt_get_comments` | Комментарии, новые сначала; отдают `id` (нужен для правки/удаления), автора, `created`; `count`/`skip` — пагинация |
-| `yt_add_comment` | Новый комментарий; текст сохраняется как wiki-разметка **как есть** (бэктики — inline-code, экранировать слешем их не нужно) |
+| `yt_add_comment` | Новый комментарий; текст сохраняется как **Markdown как есть** (бэктики — inline-code, заголовки `#`/`##`, экранировать слешем их не нужно; wiki-разметка `h3.`/`{{код}}` не рендерится) |
 | `yt_update_comment` | Замена текста комментария по `comment_id` |
 | `yt_delete_comment` | Удаление комментария; при 403 подсказывает, что токену не выдано право удаления |
 | `yt_get_attachments` | Вложения |

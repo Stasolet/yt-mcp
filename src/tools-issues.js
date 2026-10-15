@@ -170,7 +170,7 @@ export function registerIssueTools(server, getClient) {
       inputSchema: {
         project: z.string().describe("Project name or short name, e.g. 'ABC'"),
         subject: z.string().describe("Issue summary"),
-        description: z.string().default("").describe("Issue description"),
+        description: z.string().default("").describe("Issue description (Markdown)"),
         command: z.string().default("").describe("Optional command applied after creation"),
       },
     },
@@ -250,7 +250,7 @@ export function registerIssueTools(server, getClient) {
       inputSchema: {
         issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
         subject: z.string().optional().describe("New subject"),
-        description: z.string().optional().describe("New description"),
+        description: z.string().optional().describe("New description (Markdown)"),
         expected_updated: z
           .number()
           .int()
@@ -338,12 +338,14 @@ export function registerIssueTools(server, getClient) {
       description:
         "Add a comment to an issue. `visible_to` is an optional user/group " +
         "name restricting visibility.\n\n" +
-        "The text is stored as YouTrack wiki markup VERBATIM: backticks " +
-        "create inline code, so do NOT pre-escape them with backslashes. " +
-        "Mistakes are fixable via yt_update_comment.",
+        "YouTrack (>= 2019.1) renders comment text as Markdown VERBATIM: " +
+        "backticks are inline code, headings are '#', '##', ... — do NOT " +
+        "pre-escape backticks with backslashes. Legacy wiki markup " +
+        "('h3.', '{{code}}', '{color}') does NOT render and shows as plain " +
+        "text. Mistakes are fixable via yt_update_comment.",
       inputSchema: {
         issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
-        text: z.string().describe("Comment text in YouTrack wiki markup"),
+        text: z.string().describe("Comment text in Markdown"),
         visible_to: z.string().default("").describe("Optional user/group visibility restriction"),
       },
     },
@@ -364,8 +366,8 @@ export function registerIssueTools(server, getClient) {
     {
       title: "Edit an issue comment",
       description:
-        "Replace the text of an existing comment (text is YouTrack wiki " +
-        "markup, stored verbatim). Find `comment_id` via yt_get_comments.",
+        "Replace the text of an existing comment (text is Markdown, stored " +
+        "verbatim). Find `comment_id` via yt_get_comments.",
       inputSchema: {
         issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
         comment_id: z.string().describe("Comment ID, e.g. '4-10729'"),
