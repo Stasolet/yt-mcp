@@ -71,6 +71,42 @@ Node **не использует системное хранилище серт�
   удаления комментариев в токене может не хватать полномочия
   (`yt_delete_comment` так и объясняет ошибку).
 
+### Ограничения поискового языка на этом инстансе
+
+Проверено 2026-10 live; `yt_search_issues` дополняет каждый из этих отказов
+конкретной подсказкой (`searchErrorHint` в `src/tools-issues.js`).
+
+Работает:
+
+- `project:ABC state: Unresolved sort by: updated desc`, а также
+  `sort by: created desc`;
+- однословные значения бандлов и отрицание: `state: Fixed`,
+  `state: -Fixed -Frozen`, `subsystem: Backend type: Task`,
+  `priority: Show-stopper`;
+- абсолютная дата: `created: 2026-10-20`;
+- номер задачи: `#ABC-123` (без `#` строка ищется и как текст, поэтому может
+  вернуть больше задач).
+
+Не работает — ответ всегда `invalid_query`:
+
+- многословные значения бандлов в любом виде кавычек: `state: "In Progress"`,
+  `state: In Progress`, `state: {"To be discussed"}`. Вместо них —
+  `state: Unresolved` или однословное значение, остальное отсеивается уже из
+  ответа;
+- относительные и сравнительные даты: `created: -2w`, `updated: before: -3d`,
+  `updated: <2026-10-20`;
+- `me()` — «Can't recognize (», нужен логин: `assignee: ivan.ivanov`;
+- фильтр `id:` по внутреннему id (`id: 2-7310` не находит ничего).
+
+Параметр `fields` отправляется серверу дословно: одна группа `(...)` на имя
+разбирается (`value(name,localizedName)`), вторая группа у того же имени
+(`typeOf(t)(name)`) даёт `Cannot parse fields query`. Неизвестные простые имена
+сервер пропускает молча.
+
+Оба формата идентификатора задачи принимаются одинаково: внутренний `id`
+(`2-7310`, его возвращает поле `id`) и читаемый номер (`ABC-123`, поле
+`number`) — `yt_get_issue` и остальные инструменты берут любой из них.
+
 ## Установка
 
 Не требует установки — запуск через `npx` скачает пакет сам:
@@ -121,9 +157,9 @@ YOUTRACK_URL=https://youtrack.example.com YOUTRACK_TOKEN=xxx npx -y youtrack-mcp
 ### Issues
 | Инструмент | Описание |
 |---|---|
-| `yt_search_issues` | Поиск по YouTrack Search Language (`project:ABC State: Unresolved`); baseline-поля всегда домешиваются в `fields` |
-| `yt_get_issue` | Issue целиком: описание, поля, ссылки, теги |
-| `yt_create_issue` | Создание + опциональная команда; при ошибке команды issue всё равно возвращается с полем `command_error` |
+| `yt_search_issues` | Поиск по YouTrack Search Language (`project:ABC state: Unresolved sort by: updated desc`); известные отказы этого инстанса дополняются подсказкой, baseline-поля всегда домешиваются в `fields` |
+| `yt_get_issue` | Issue целиком: описание, поля, ссылки, теги; `issue_id` — внутренний (`2-7310`) или читаемый (`ABC-123`) |
+| `yt_create_issue` | Создание + опциональная команда; при ошибке команды issue всё равно возвращается с полем `command_error`. Поля, которых нет в команде, берутся проектом по умолчанию (`Subsystem: Research` в MDPO), поэтому Type/Priority/Subsystem лучше задать командой |
 | `yt_update_issue` | Правка subject/description (остальное — командами); `expected_updated` защищает от перезаписи параллельной правки |
 | `yt_apply_command` | Любая команда из Command Reference (`#State Fixed ABC-1`) |
 | `yt_get_comments` | Комментарии, новые сначала; отдают `id` (нужен для правки/удаления), автора, `created`; `count`/`skip` — пагинация |

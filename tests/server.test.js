@@ -16,11 +16,53 @@ const { createServer } = await import("../src/server.js");
 
 const calls = [];
 
+const queryError = (child) =>
+  JSON.stringify({
+    error: "invalid_query",
+    error_description: "Can't parse search query, please check and update query syntax",
+    error_field: "query",
+    error_children: [{ error: child, error_description: "" }],
+  });
+
+// Rejections and their exact wording are copied from the live instance
+// (2026-10); the tool turns each of them into a hint.
+const SEARCH_REJECTIONS = [
+  [/state: "In Progress"/, 400, queryError('The value ""In Progress"" isn\'t used for the State field.')],
+  [
+    /assignee: me\(\)/,
+    400,
+    JSON.stringify({
+      error: "invalid_query",
+      error_description: "Can't parse search query, please check and update query syntax",
+      error_children: [
+        { error: "Can't recognize (", error_description: "" },
+        { error: "Can't recognize )", error_description: "" },
+      ],
+    }),
+  ],
+  [
+    /typeOf\(t\)\(name\)/,
+    500,
+    JSON.stringify({
+      error: "server_error",
+      error_description:
+        'Cannot parse fields query "id,numberInProject,project(shortName),typeOf(t)(name)", error at position 62',
+    }),
+  ],
+  [/created: -2w/, 400, queryError('The value "2w" isn\'t used for the reporter,created fields.')],
+  [/boom500/, 500, JSON.stringify({ error: "internal", error_description: "server is down" })],
+];
+
 // Patch the client's request method to mock the YouTrack REST API.
 YouTrackClient.prototype.request = async function (method, path, opts = {}) {
   calls.push([method, path, opts.params ?? {}, opts.json]);
 
   if (path === "/issues" && method === "GET") {
+    const searched = `${opts.params?.query ?? ""} ${opts.params?.fields ?? ""}`;
+    const rejection = SEARCH_REJECTIONS.find(([test]) => test.test(searched));
+    if (rejection) {
+      throw new YouTrackError(rejection[1], rejection[2]);
+    }
     return [
       {
         id: "2-1",
@@ -56,6 +98,16 @@ YouTrackClient.prototype.request = async function (method, path, opts = {}) {
   }
   if (path === "/issues/ABC-9" && method === "GET") {
     return { id: "2-9" };
+  }
+  if (path === "/issues/2-1" && method === "GET") {
+    return {
+      id: "2-1",
+      project: { shortName: "ABC" },
+      numberInProject: 1,
+      summary: "Test issue",
+      customFields: [{ name: "State", value: { name: "Fixed" } }],
+      updated: 111,
+    };
   }
   if (path.startsWith("/issues/ABC-1/comments") && method === "POST") {
     return { id: "c1", text: opts.json?.text };
@@ -178,6 +230,75 @@ async function main() {
   assert(lastSearch.includes("numberInProject"), `baseline not merged: ${lastSearch}`);
   assert(lastSearch.includes("customFields"), `customFields not merged: ${lastSearch}`);
   assert(!lastSearch.includes("subsystem(name)"), `flat name not dropped: ${lastSearch}`);
+
+  // A rejected bundle value names the tool that lists accepted values.
+  res = await client.callTool({
+    name: "yt_search_issues",
+    arguments: { query: 'project:ABC state: "In Progress"' },
+  });
+  assert(res.isError, "a rejected query must fail the call");
+  assert(
+    res.content[0].text.includes("yt_get_issue_states"),
+    `bundle rejection must name the lookup: ${res.content[0].text}`
+  );
+  assert(
+    res.content[0].text.includes("Multi-word bundle values"),
+    `bundle rejection must warn about multi-word values: ${res.content[0].text}`
+  );
+
+  // "me()" is a function-syntax rejection, not a bundle one.
+  res = await client.callTool({
+    name: "yt_search_issues",
+    arguments: { query: "project:ABC assignee: me()" },
+  });
+  assert(res.isError, "unsupported function syntax must fail the call");
+  assert(
+    res.content[0].text.includes("assignee: john.doe"),
+    `function syntax rejection must suggest a login: ${res.content[0].text}`
+  );
+
+  // A second (…) group on one name is what breaks the fields selector.
+  res = await client.callTool({
+    name: "yt_search_issues",
+    arguments: { query: "project:ABC", fields: "typeOf(t)(name)" },
+  });
+  assert(res.isError, "an unparsable fields selector must fail the call");
+  assert(
+    res.content[0].text.includes("second group"),
+    `fields rejection must explain the grammar: ${res.content[0].text}`
+  );
+
+  // A rejected period is a date problem: sending the caller to the bundle
+  // lookup would be a wrong way out.
+  res = await client.callTool({
+    name: "yt_search_issues",
+    arguments: { query: "project:ABC created: -2w" },
+  });
+  assert(res.isError, "a rejected date must fail the call");
+  assert(
+    res.content[0].text.includes("absolute date"),
+    `date rejection must give the working form: ${res.content[0].text}`
+  );
+  assert(
+    !res.content[0].text.includes("yt_get_project_fields"),
+    `date rejection must not name the bundle lookup: ${res.content[0].text}`
+  );
+
+  // An unrelated failure keeps its own text without a search hint.
+  res = await client.callTool({
+    name: "yt_search_issues",
+    arguments: { query: "project:ABC boom500" },
+  });
+  assert(res.isError, "a server error must fail the call");
+  assert(
+    !res.content[0].text.includes("sort by: updated desc"),
+    `no hint should be attached to an unrelated error: ${res.content[0].text}`
+  );
+
+  // The internal id from another tool's output resolves like the readable one.
+  res = await client.callTool({ name: "yt_get_issue", arguments: { issue_id: "2-1" } });
+  data = parseResult(res);
+  assert(data.number === "ABC-1", `internal id must resolve: ${JSON.stringify(data)}`);
 
   res = await client.callTool({
     name: "yt_apply_command",

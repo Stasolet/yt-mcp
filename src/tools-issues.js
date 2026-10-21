@@ -23,6 +23,12 @@ const FLAT_CF_NAMES = new Set([
   "state", "priority", "type", "subsystem", "assignee",
 ]);
 
+// Both id forms appear in tool output and both are accepted by the API, so a
+// caller that concatenates them ("ABC-" + internal id) is the common mistake.
+const ISSUE_ID_DESC =
+  "Issue ID: internal ('2-7310', field `id`) or readable ('ABC-123', field " +
+  "`number`), copied verbatim from another tool's output";
+
 export function buildFieldsParam(fields) {
   if (!fields || fields === ISSUE_FIELDS) return ISSUE_FIELDS;
   const extras = fields
@@ -32,6 +38,58 @@ export function buildFieldsParam(fields) {
     .filter((s) => !FLAT_CF_NAMES.has(s.toLowerCase().replace(/\(.*$/, "")));
   const merged = new Set([...BASE_FIELDS.split(","), ...extras]);
   return [...merged].join(",");
+}
+
+const dateHint = () =>
+  "Relative and comparison dates (`-2w`, `before: -3d`, `<2026-10-20`) are " +
+  "rejected here; an absolute date (`created: 2026-10-20`) works. Re-run the " +
+  "smallest query (`project:ABC sort by: updated desc`) and add one criterion " +
+  "at a time.";
+
+/**
+ * The gaprest search parser reports a rejection without naming a way out, and
+ * the ways it rejects are specific to this instance (checked live 2026-10).
+ * Returns a hint for the known shapes, or "" so an unrelated error keeps its
+ * own text.
+ */
+export function searchErrorHint(message) {
+  if (/Cannot parse fields query/i.test(message)) {
+    return (
+      "The `fields` selector is sent verbatim. One (…) group per name parses " +
+      "(`value(name,localizedName)`); a second group on the same name " +
+      "(`typeOf(t)(name)`) is what this error means. Omitting `fields` is " +
+      "usually enough — the baseline needed for normalization is merged in."
+    );
+  }
+  if (/Can't recognize\s*[()]/i.test(message)) {
+    return (
+      "This parser does not support function syntax: `assignee: me()` fails, " +
+      "write a login (`assignee: john.doe`). yt_search_users lists them."
+    );
+  }
+  const badValue = message.match(/isn't used for the (.+?) field/i);
+  if (badValue) {
+    const field = badValue[1].trim();
+    // Date fields report a rejected period with this same wording, and naming
+    // a bundle lookup for them would send the caller to the wrong tool.
+    if (/creat|updat|resolv|date|period/i.test(field)) {
+      return dateHint();
+    }
+    const lookup =
+      field.toLowerCase() === "state"
+        ? "yt_get_issue_states, or yt_get_project_fields with field: 'State'"
+        : `yt_get_project_fields with field: '${field}'`;
+    return (
+      `Accepted values of '${field}': ${lookup}. Multi-word bundle values ` +
+      `("In Progress", "To be discussed") are rejected here in every quoting ` +
+      `form — filter on a single-word value or the pseudo-value 'Unresolved' ` +
+      `and select the rest from the result.`
+    );
+  }
+  if (/Can't parse search query/i.test(message)) {
+    return dateHint();
+  }
+  return "";
 }
 
 function jsonResult(data) {
@@ -111,9 +169,26 @@ export function registerIssueTools(server, getClient) {
       title: "Search YouTrack issues",
       description:
         "Search issues with a YouTrack query (YouTrack Search Language).\n\n" +
-        "Examples of `query`:\n" +
-        "  - 'State: Unresolved project:ABC'\n" +
-        "  - 'tag: {GitLab merge request} assignee: me()'",
+        "Queries verified on this instance:\n" +
+        "  - 'project:ABC state: Unresolved sort by: updated desc'\n" +
+        "  - 'project:ABC state: -Fixed -Frozen'\n" +
+        "  - 'project:ABC subsystem: Backend type: Task'\n" +
+        "  - 'project:ABC assignee: john.doe'\n" +
+        "  - 'project:ABC created: 2026-10-20'\n" +
+        "  - '#ABC-123'  (plain text such as 'ABC-123' also matches other " +
+        "issues by words)\n\n" +
+        "This parser rejects: multi-word bundle values in every quoting form " +
+        "('state: \"In Progress\"', 'state: In Progress', " +
+        "'state: {\"To be discussed\"}') — use 'state: Unresolved' or a " +
+        "single-word value and select the rest from the result; relative and " +
+        "comparison dates ('-2w', 'before: -3d', '<2026-10-20'); 'me()' (write " +
+        "a login); 'id: 2-7310'. Accepted bundle values come from " +
+        "yt_get_project_fields.\n\n" +
+        "`fields` is sent verbatim: one (…) group per name parses, a second " +
+        "group on the same name fails. The baseline needed for normalization " +
+        "(id, numberInProject, project, summary, customFields) is always " +
+        "merged in; flat names like `subsystem` are accepted and ignored as " +
+        "extras.",
       inputSchema: {
         query: z.string().describe("YouTrack Search Language query"),
         max_results: z.number().int().default(25).describe("Max number of results"),
@@ -130,9 +205,18 @@ export function registerIssueTools(server, getClient) {
     },
     async ({ query, max_results, fields }) => {
       const client = getClient();
-      const data = await client.get("/issues", {
-        params: { query, $top: max_results, fields: buildFieldsParam(fields) },
-      });
+      let data;
+      try {
+        data = await client.get("/issues", {
+          params: { query, $top: max_results, fields: buildFieldsParam(fields) },
+        });
+      } catch (err) {
+        const hint = searchErrorHint(err?.message ?? "");
+        if (err instanceof YouTrackError && hint) {
+          throw new YouTrackError(err.statusCode, `${err.message}\n\n${hint}`);
+        }
+        throw err;
+      }
       return jsonResult((data ?? []).map(normalizeIssue));
     }
   );
@@ -142,10 +226,10 @@ export function registerIssueTools(server, getClient) {
     {
       title: "Get a YouTrack issue",
       description:
-        "Get a single issue by its ID (e.g. 'ABC-123') with the main fields " +
-        "(subject, description, state, priority, assignee, tags, links).",
+        "Get a single issue with the main fields (subject, description, state, " +
+        "priority, assignee, tags, links).",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
       },
     },
     async ({ issue_id }) => {
@@ -166,6 +250,9 @@ export function registerIssueTools(server, getClient) {
         "`command` is an optional YouTrack command applied right after creation,\n" +
         "e.g. '#State Backlog #Priority Medium'. If the command fails, the\n" +
         "issue is still created and returned with a `command_error` field.\n" +
+        "Fields the command does not set keep the project defaults, which are\n" +
+        "often wrong for a new task ('Subsystem: Research' in MDPO), so pass a\n" +
+        "command setting Type/Priority/Subsystem explicitly.\n" +
         "Returns the created issue (id + number).",
       inputSchema: {
         project: z.string().describe("Project name or short name, e.g. 'ABC'"),
@@ -248,7 +335,7 @@ export function registerIssueTools(server, getClient) {
         "yt_get_issue) guards against overwriting concurrent edits: if the " +
         "issue changed in the meantime the update is rejected.",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
         subject: z.string().optional().describe("New subject"),
         description: z.string().optional().describe("New description (Markdown)"),
         expected_updated: z
@@ -296,7 +383,7 @@ export function registerIssueTools(server, getClient) {
         "Get comments of an issue, newest first. Each comment carries `id` " +
         "(needed by yt_update_comment/yt_delete_comment), author, created.",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
         count: z
           .number()
           .int()
@@ -344,7 +431,7 @@ export function registerIssueTools(server, getClient) {
         "('h3.', '{{code}}', '{color}') does NOT render and shows as plain " +
         "text. Mistakes are fixable via yt_update_comment.",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
         text: z.string().describe("Comment text in Markdown"),
         visible_to: z.string().default("").describe("Optional user/group visibility restriction"),
       },
@@ -369,7 +456,7 @@ export function registerIssueTools(server, getClient) {
         "Replace the text of an existing comment (text is Markdown, stored " +
         "verbatim). Find `comment_id` via yt_get_comments.",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
         comment_id: z.string().describe("Comment ID, e.g. '4-10729'"),
         text: z.string().describe("New comment text"),
       },
@@ -395,7 +482,7 @@ export function registerIssueTools(server, getClient) {
         "if YouTrack answers 403, regenerate the permanent token with the " +
         "granted permission (the web UI deletes own comments regardless).",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
         comment_id: z.string().describe("Comment ID, e.g. '4-10729'"),
       },
     },
@@ -426,7 +513,7 @@ export function registerIssueTools(server, getClient) {
       title: "List issue attachments",
       description: "List attachments of an issue (name, url, content type).",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
       },
     },
     async ({ issue_id }) => {
@@ -451,7 +538,7 @@ export function registerIssueTools(server, getClient) {
         "Get GitLab VCS references (commits/MRs synced from GitLab) linked to " +
         "an issue via the YouTrack GitLab integration.",
       inputSchema: {
-        issue_id: z.string().describe("Issue ID, e.g. 'ABC-123'"),
+        issue_id: z.string().describe(ISSUE_ID_DESC),
       },
     },
     async ({ issue_id }) => {
