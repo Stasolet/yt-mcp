@@ -430,12 +430,12 @@ export function registerIssueTools(server, getClient) {
         "pre-escape backticks with backslashes. Legacy wiki markup " +
         "('h3.', '{{code}}', '{color}') does NOT render and shows as plain " +
         "text. Mistakes are fixable via yt_update_comment.\n\n" +
-        "A long report can hide its detail in a collapsible block " +
-        "('<details><summary>Heading</summary> … </details>'): this instance " +
-        "parses HTML in issues, but Markdown inside such a block is NOT " +
-        "parsed, so inside it use HTML only (<p>, <ul><li>, <code>, <br>, " +
-        "<a href>) and keep an empty line after <summary> and before " +
-        "</details>.",
+        "A long report can hide its detail in a collapsible block: " +
+        "'<details><summary>Heading</summary>', an EMPTY LINE, the body, an " +
+        "empty line, '</details>'. Without that empty line the body still " +
+        "belongs to the HTML block and its markup prints literally; with it, " +
+        "Markdown renders inside the block — lists, `code`, links and " +
+        "attachment images ('![caption](file.png){width=70%}').",
       inputSchema: {
         issue_id: z.string().describe(ISSUE_ID_DESC),
         text: z.string().describe("Comment text in Markdown"),
