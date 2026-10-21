@@ -431,11 +431,14 @@ export function registerIssueTools(server, getClient) {
         "('h3.', '{{code}}', '{color}') does NOT render and shows as plain " +
         "text. Mistakes are fixable via yt_update_comment.\n\n" +
         "A long report can hide its detail in a collapsible block: " +
-        "'<details><summary>Heading</summary>', an EMPTY LINE, the body, an " +
-        "empty line, '</details>'. Without that empty line the body still " +
-        "belongs to the HTML block and its markup prints literally; with it, " +
-        "Markdown renders inside the block — lists, `code`, links and " +
-        "attachment images ('![caption](file.png){width=70%}').",
+        "'<details><summary><b>Heading</b></summary>', an empty line, " +
+        "the body in Markdown, an empty line, '</details>'. Without that " +
+        "empty line the body still belongs to the HTML block and its " +
+        "markup prints literally; with it, Markdown renders inside the " +
+        "block — lists, `code`, links and attachment images " +
+        "('![caption](file.png){width=70%}'). Write the heading bold " +
+        "with <b>: Markdown on the <summary> line is not parsed, and a " +
+        "plain heading reads like the text around it.",
       inputSchema: {
         issue_id: z.string().describe(ISSUE_ID_DESC),
         text: z.string().describe("Comment text in Markdown"),
