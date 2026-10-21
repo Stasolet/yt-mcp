@@ -1,5 +1,5 @@
 /**
- * YouTrack MCP server (YouTrack 2022.3, REST API) for opencode.
+ * YouTrack MCP server (YouTrack 2023.3, REST API) for opencode.
  *
  * Environment variables:
  *   YOUTRACK_URL   - base URL, e.g. https://youtrack.example.com
@@ -17,7 +17,7 @@ import { registerBoardTools } from "./tools-boards.js";
 import { registerMetaTools } from "./tools-meta.js";
 
 const INSTRUCTIONS =
-  "Tools for JetBrains YouTrack 2022.3: issues (search/read/create/update/" +
+  "Tools for JetBrains YouTrack 2023.3: issues (search/read/create/update/" +
   "comments/attachments), commands (Command Reference syntax), Agile boards, " +
   "projects and project field values (yt_get_project_fields), plus a " +
   "read-only raw API escape hatch (yt_rest_get). Issue state/priority/tags/" +

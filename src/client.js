@@ -2,7 +2,7 @@
  * Thin async HTTP client for the YouTrack REST API.
  *
  * NOTE: youtrack.lab403.inforion.ru implements the "gaprest" transitional REST
- * API, NOT the documented 2022.3 one. Empirically (2026-10):
+ * API, NOT the documented 2023.3 one. Empirically (2026-10):
  *   * partial-response param is `fields` (plain, without `$`); `$fields` is ignored
  *   * pagination param is `$top` (`max`, `$max`, `count` are ignored)
  *   * issue entities use legacy names: `summary`, `numberInProject`,

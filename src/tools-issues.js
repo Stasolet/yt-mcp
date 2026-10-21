@@ -429,7 +429,13 @@ export function registerIssueTools(server, getClient) {
         "backticks are inline code, headings are '#', '##', ... — do NOT " +
         "pre-escape backticks with backslashes. Legacy wiki markup " +
         "('h3.', '{{code}}', '{color}') does NOT render and shows as plain " +
-        "text. Mistakes are fixable via yt_update_comment.",
+        "text. Mistakes are fixable via yt_update_comment.\n\n" +
+        "A long report can hide its detail in a collapsible block " +
+        "('<details><summary>Heading</summary> … </details>'): this instance " +
+        "parses HTML in issues, but Markdown inside such a block is NOT " +
+        "parsed, so inside it use HTML only (<p>, <ul><li>, <code>, <br>, " +
+        "<a href>) and keep an empty line after <summary> and before " +
+        "</details>.",
       inputSchema: {
         issue_id: z.string().describe(ISSUE_ID_DESC),
         text: z.string().describe("Comment text in Markdown"),
@@ -454,7 +460,8 @@ export function registerIssueTools(server, getClient) {
       title: "Edit an issue comment",
       description:
         "Replace the text of an existing comment (text is Markdown, stored " +
-        "verbatim). Find `comment_id` via yt_get_comments.",
+        "verbatim, with the same formatting rules as yt_add_comment). Find " +
+        "`comment_id` via yt_get_comments.",
       inputSchema: {
         issue_id: z.string().describe(ISSUE_ID_DESC),
         comment_id: z.string().describe("Comment ID, e.g. '4-10729'"),
