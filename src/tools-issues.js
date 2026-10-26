@@ -175,6 +175,9 @@ export function registerIssueTools(server, getClient) {
         "  - 'project:ABC subsystem: Backend type: Task'\n" +
         "  - 'project:ABC assignee: john.doe'\n" +
         "  - 'project:ABC created: 2026-10-20'\n" +
+        "  - 'relates to: ABC-123'  (link search '<link name>: <id>' works " +
+        "both ways — a verified way to read links; 'links to:' is NOT " +
+        "reliable on this instance)\n" +
         "  - '#ABC-123'  (plain text such as 'ABC-123' also matches other " +
         "issues by words)\n\n" +
         "This parser rejects: multi-word bundle values in every quoting form " +
@@ -227,7 +230,11 @@ export function registerIssueTools(server, getClient) {
       title: "Get a YouTrack issue",
       description:
         "Get a single issue with the main fields (subject, description, state, " +
-        "priority, assignee, tags, links).",
+        "priority, type, subsystem, assignee, reporter, tags). Comments and " +
+        "links are NOT included — comments via yt_get_comments; links are not " +
+        "exposed by this instance's gateway (docs/youtrack-links.md). For " +
+        "other raw fields use yt_rest_get (e.g. path '/issues/ABC-1' with a " +
+        "custom `fields` param).",
       inputSchema: {
         issue_id: z.string().describe(ISSUE_ID_DESC),
       },
@@ -304,14 +311,29 @@ export function registerIssueTools(server, getClient) {
       description:
         "Apply an arbitrary YouTrack command to issues.\n\n" +
         "Command syntax follows the YouTrack Command Reference, e.g.:\n" +
-        "  - '#State Fixed ABC-123'                 -> set state\n" +
-        "  - 'tag -{Feature Bug} ABC-123 ABC-124'   -> remove tag from issues\n" +
-        "  - '#assignee john ABC-123'               -> set assignee\n" +
+        "  - '#State Fixed ABC-123'    -> set state\n" +
+        "  - '#assignee john ABC-123'  -> set assignee\n" +
+        "  - 'tag Feature ABC-123'     -> add tag (this instance CREATES a " +
+        "tag named <text> if it does not exist)\n" +
         "The target issue IDs must be included INSIDE the command string.\n\n" +
         "On this instance single-word bundle values are written WITHOUT curly " +
         "braces ('#Subsystem Backend', not '#Subsystem {Backend}'); commands " +
         "with braces are retried automatically once. Use yt_get_project_fields " +
-        "to see the exact accepted values.",
+        "to see the exact accepted values. Multi-word values ('To be " +
+        "discussed') are rejected in every quoting form.\n\n" +
+        "This gateway has NO '-' removal form: 'tag -Foo' CREATES a literal " +
+        "tag '-Foo' instead of removing Foo. Remove tags with yt_remove_tag; " +
+        "remove links in the YouTrack web UI.\n\n" +
+        "Link commands work in the web-UI wording — recognized by this " +
+        "gateway: '#Relates to', '#Subtask of', '#Duplicates', " +
+        "'#Is duplicated by', '#Depends on', '#Is required for'. The id " +
+        "right after the phrase is the link target (kept in the command " +
+        "text), the remaining ids are the issues to apply it to. Only " +
+        "'#Relates to' is end-to-end verified on this instance; the other " +
+        "verbs are recognized (they resolve the target id). The documented " +
+        "'link <type> ...' verb does not exist here and is rejected without " +
+        "an API call; 'Parent', 'Child', 'Has subtask', 'Blocked by' are " +
+        "not commands here either. See docs/youtrack-links.md.",
       inputSchema: {
         command: z.string().describe("YouTrack command string"),
       },
@@ -514,6 +536,58 @@ export function registerIssueTools(server, getClient) {
         throw err;
       }
       return jsonResult({ deleted: true, issue_id, comment_id });
+    }
+  );
+
+  server.registerTool(
+    "yt_remove_tag",
+    {
+      title: "Remove a tag from an issue",
+      description:
+        "Detach a tag from an issue by its exact name (case-insensitive " +
+        "match).\n\n" +
+        'Commands cannot remove tags on this instance: the gateway has no ' +
+        '"-" removal form — "tag -Name" CREATES a tag literally named ' +
+        '"-Name" — so removal goes through REST ' +
+        "(DELETE /issues/{id}/tags/{tagId}). The tag entity itself is not " +
+        "deleted, it only detaches from this issue; tags used by other " +
+        "issues are unaffected. Note that 'tag <text>' commands CREATE any " +
+        "literal <text> as a new tag on this instance.",
+      inputSchema: {
+        issue_id: z.string().describe(ISSUE_ID_DESC),
+        tag: z.string().describe("Exact tag name as shown on the issue"),
+      },
+    },
+    async ({ issue_id, tag }) => {
+      const client = getClient();
+      const data = await client.get(`/issues/${encodeURIComponent(issue_id)}`, {
+        params: { fields: "tags(id,name)" },
+      });
+      const tags = data?.tags ?? [];
+      const wanted = String(tag).trim().toLowerCase();
+      const match = tags.find((t) => (t?.name ?? "").toLowerCase() === wanted);
+      if (!match) {
+        throw new Error(
+          `Issue ${issue_id} has no tag "${tag}". Available tags: ` +
+            (tags.map((t) => t?.name).filter(Boolean).join(", ") || "(none)")
+        );
+      }
+      try {
+        await client.delete(
+          `/issues/${encodeURIComponent(issue_id)}/tags/${encodeURIComponent(match.id)}`
+        );
+      } catch (err) {
+        if (err instanceof YouTrackError && err.statusCode === 403) {
+          throw new YouTrackError(
+            err.statusCode,
+            err.message +
+              " — the permanent token lacks permission to change issue tags; " +
+              "grant it (or remove the tag in the YouTrack web UI)."
+          );
+        }
+        throw err;
+      }
+      return jsonResult({ removed: match.name, tag_id: match.id, issue_id });
     }
   );
 

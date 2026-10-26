@@ -99,6 +99,15 @@ YouTrackClient.prototype.request = async function (method, path, opts = {}) {
   if (path === "/issues/ABC-9" && method === "GET") {
     return { id: "2-9" };
   }
+  if (path === "/issues/ABC-12" && method === "GET") {
+    return { id: "2-12" };
+  }
+  if (path === "/issues/ABC-2" && method === "GET") {
+    return { id: "2-2", tags: [{ id: "6-1", name: "JunkTag" }] };
+  }
+  if (path === "/issues/2-2/tags/6-1" && method === "DELETE") {
+    return {};
+  }
   if (path === "/issues/2-1" && method === "GET") {
     return {
       id: "2-1",
@@ -172,6 +181,14 @@ YouTrackClient.prototype.request = async function (method, path, opts = {}) {
       { name: "Frontend", presentation: "Frontend", isDefault: false },
     ];
   }
+  if (path === "/issueLinkTypes" && method === "GET") {
+    return [
+      { name: "Relates", $type: "IssueLinkType" },
+      { name: "Depend", $type: "IssueLinkType" },
+      { name: "Duplicate", $type: "IssueLinkType" },
+      { name: "Subtask", $type: "IssueLinkType" },
+    ];
+  }
   return {};
 };
 
@@ -199,13 +216,14 @@ async function main() {
   ]);
 
   const { tools } = await client.listTools();
-  assert(tools.length === 21, `expected 21 tools, got ${tools.length}`);
+  assert(tools.length === 23, `expected 23 tools, got ${tools.length}`);
 
   const names = tools.map((t) => t.name);
   assert(names.includes("yt_get_board_issues"), "missing yt_get_board_issues");
   assert(names.includes("yt_get_vcs_references"), "missing yt_get_vcs_references");
   assert(names.includes("yt_get_project_fields"), "missing yt_get_project_fields");
   assert(names.includes("yt_rest_get"), "missing yt_rest_get");
+  assert(names.includes("yt_list_link_types"), "missing yt_list_link_types");
 
   let res = await client.callTool({
     name: "yt_search_issues",
@@ -377,6 +395,110 @@ async function main() {
   ).length;
   assert(postsAfter === postsBefore, "conflicting update must not POST");
 
+  // The "link <type>" verb is dead on this gateway — rejected client-side
+  // without an API call, with the working form spelled out.
+  for (const cmd of ["link Subtask of ABC-1 ABC-2", "link {Has subtask} ABC-1"]) {
+    const before = calls.length;
+    res = await client.callTool({ name: "yt_apply_command", arguments: { command: cmd } });
+    assert(res.isError, `link command must fail: ${cmd}`);
+    assert(
+      /"#Relates to <TARGET-ID> <SOURCE-ID/.test(res.content[0].text),
+      `link rejection must name the working form: ${res.content[0].text}`
+    );
+    assert(calls.length === before, `link rejection must not call the API: ${cmd}`);
+  }
+
+  // The "-" removal form creates literal garbage here ("tag -Foo" makes a
+  // tag "-Foo") — blocked client-side.
+  for (const cmd of ["tag -Junk ABC-1", "#-Relates to ABC-9 ABC-1"]) {
+    const before = calls.length;
+    res = await client.callTool({ name: "yt_apply_command", arguments: { command: cmd } });
+    assert(res.isError, `"-" removal must fail: ${cmd}`);
+    assert(
+      res.content[0].text.includes("yt_remove_tag"),
+      `"-" rejection must point at yt_remove_tag: ${res.content[0].text}`
+    );
+    assert(calls.length === before, `"-" rejection must not call the API: ${cmd}`);
+  }
+
+  // Link-shaped commands reach the gateway in the web-UI form: the FIRST id
+  // (the target) stays in the query text, the rest resolve into `issues`.
+  res = await client.callTool({
+    name: "yt_apply_command",
+    arguments: { command: "#Relates to ABC-1 ABC-9" },
+  });
+  parseResult(res);
+  let body = calls.filter(([m, p]) => m === "POST" && p === "/commands").at(-1)[3];
+  assert(body.query === "Relates to ABC-1", JSON.stringify(body));
+  assert(body.command === "#Relates to ABC-1", JSON.stringify(body));
+  assert(JSON.stringify(body.issues) === '[{"id":"2-9"}]', JSON.stringify(body.issues));
+
+  // An id BEFORE the phrase inverts the direction silently — reject instead.
+  {
+    const before = calls.length;
+    res = await client.callTool({
+      name: "yt_apply_command",
+      arguments: { command: "ABC-1 #Relates to ABC-9" },
+    });
+    assert(res.isError, "id before the link phrase must fail");
+    assert(
+      res.content[0].text.includes("right after the command phrase"),
+      res.content[0].text
+    );
+    assert(calls.length === before, "must not call the API");
+  }
+
+  // Removing a source id must not damage a longer id with the same prefix.
+  res = await client.callTool({
+    name: "yt_apply_command",
+    arguments: { command: "#Relates to ABC-12 ABC-1" },
+  });
+  parseResult(res);
+  body = calls.filter(([m, p]) => m === "POST" && p === "/commands").at(-1)[3];
+  assert(body.query === "Relates to ABC-12", JSON.stringify(body));
+  assert(JSON.stringify(body.issues) === '[{"id":"2-1"}]', JSON.stringify(body.issues));
+
+  // Braced target ids are normalized away on the way.
+  res = await client.callTool({
+    name: "yt_apply_command",
+    arguments: { command: "Relates to {ABC-9} ABC-1" },
+  });
+  parseResult(res);
+  body = calls.filter(([m, p]) => m === "POST" && p === "/commands").at(-1)[3];
+  assert(body.query === "Relates to ABC-9", JSON.stringify(body));
+  assert(JSON.stringify(body.issues) === '[{"id":"2-1"}]', JSON.stringify(body.issues));
+
+  // A link command without a source issue is rejected before any API call.
+  {
+    const before = calls.length;
+    res = await client.callTool({
+      name: "yt_apply_command",
+      arguments: { command: "#Subtask Of ABC-1" },
+    });
+    assert(res.isError, "single-id link command must fail");
+    assert(res.content[0].text.includes("<SOURCE-ID"), res.content[0].text);
+    assert(calls.length === before, "single-id link rejection must not call the API");
+  }
+
+  // yt_remove_tag detaches by exact (case-insensitive) name.
+  res = await client.callTool({
+    name: "yt_remove_tag",
+    arguments: { issue_id: "ABC-2", tag: "junktag" },
+  });
+  data = parseResult(res);
+  assert(data.removed === "JunkTag" && data.tag_id === "6-1", JSON.stringify(data));
+  res = await client.callTool({
+    name: "yt_remove_tag",
+    arguments: { issue_id: "ABC-2", tag: "Nope" },
+  });
+  assert(res.isError, "unknown tag must fail");
+  assert(res.content[0].text.includes("JunkTag"), "error must list available tags");
+
+  // yt_list_link_types returns just the names.
+  res = await client.callTool({ name: "yt_list_link_types", arguments: {} });
+  data = parseResult(res);
+  assert(data.link_types?.join(",") === "Relates,Depend,Duplicate,Subtask", JSON.stringify(data));
+
   // yt_rest_get path guard.
   res = await client.callTool({
     name: "yt_rest_get",
@@ -389,6 +511,20 @@ async function main() {
   });
   data = parseResult(res);
   assert(data[0]?.name === "My Board", JSON.stringify(data));
+
+  // The documented "/api/..." form must not double the prefix (false 404).
+  const restBefore = calls.length;
+  res = await client.callTool({
+    name: "yt_rest_get",
+    arguments: { path: "/api/agiles", params: { fields: "id,name" } },
+  });
+  data = parseResult(res);
+  assert(data[0]?.name === "My Board", JSON.stringify(data));
+  const restPaths = calls.slice(restBefore).map(([, p]) => p);
+  assert(
+    restPaths.includes("/agiles") && !restPaths.some((p) => p.startsWith("/api/")),
+    `/api prefix must be stripped at the tool, got: ${restPaths}`
+  );
 
   res = await client.callTool({
     name: "yt_add_comment",

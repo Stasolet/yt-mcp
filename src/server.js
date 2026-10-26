@@ -23,7 +23,11 @@ const INSTRUCTIONS =
   "read-only raw API escape hatch (yt_rest_get). Issue state/priority/tags/" +
   "assignee changes go through yt_apply_command so that YouTrack workflows " +
   "are triggered correctly; single-word bundle values in commands are " +
-  "written without curly braces.";
+  "written without curly braces. Link commands work only in the web-UI " +
+  "wording ('#Relates to <TARGET> <SRC>': the id right after the phrase is " +
+  "the target); the 'link ...' verb and the '-' removal form do not exist " +
+  "on this gateway — links are removed in the YouTrack web UI, tags via " +
+  "yt_remove_tag. See docs/youtrack-links.md.";
 
 let client = null;
 

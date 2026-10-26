@@ -186,6 +186,41 @@ export function registerMetaTools(server, getClient) {
   );
 
   server.registerTool(
+    "yt_list_link_types",
+    {
+      title: "List issue link types",
+      description:
+        "List the link types this instance exposes (e.g. Relates, Depend, " +
+        "Duplicate, Subtask).\n\n" +
+        "Useful together with yt_apply_command: it creates links in the " +
+        "'#Relates to <TARGET> <SRC>' form (type name lowercased to its UI " +
+        "command wording — 'subtask of', 'duplicates', 'is duplicated by', " +
+        "'depends on', 'is required for'). Links cannot be read from the " +
+        "/links endpoint, but the search 'relates to: <id>' does return the " +
+        "linked issues. Removal is not possible through the gateway — use " +
+        "the YouTrack web UI. Details: docs/youtrack-links.md.",
+      inputSchema: {},
+    },
+    async () => {
+      const client = getClient();
+      const data = await client.get("/issueLinkTypes", {
+        params: { fields: "name" },
+      });
+      const raw = Array.isArray(data) ? data : [];
+      const names = raw.map((t) => t?.name).filter(Boolean);
+      if (names.length !== raw.length) {
+        return jsonResult({
+          link_types: names,
+          note: `gateway returned ${raw.length - names.length} entries without ` +
+            "`name` (fields are filtered); raw response attached",
+          raw,
+        });
+      }
+      return jsonResult({ link_types: names });
+    }
+  );
+
+  server.registerTool(
     "yt_rest_get",
     {
       title: "Raw GET to the YouTrack REST API",
@@ -195,7 +230,8 @@ export function registerMetaTools(server, getClient) {
         "Use for endpoints without a dedicated tool. Write operations are NOT " +
         "available here — field changes must go through commands so that " +
         'workflows run. `params` is an object of query parameters, e.g. ' +
-        '{"fields": "login,name", "$top": "5"}.',
+        '{"fields": "login,name", "$top": "5"}. A leading "/api" in `path` ' +
+        "is optional and removed when present.",
       inputSchema: {
         path: z
           .string()
@@ -207,6 +243,9 @@ export function registerMetaTools(server, getClient) {
       },
     },
     async ({ path, params }) => {
+      // Agents habitually pass the documented "/api/..." form; this client
+      // prepends /api itself, so strip the duplicate to avoid a false 404.
+      path = path.replace(/^\/api(?=\/|$)/, "");
       if (!path.startsWith("/") || path.includes("..")) {
         throw new Error("path must start with '/' and must not contain '..'");
       }
